@@ -135,4 +135,23 @@ describe("collectComfortClaims", () => {
     const claims = collectComfortClaims([activeComforter("a", "c")]);
     expect(claims.get("c")).toEqual(["a"]);
   });
+
+  it("counts both active and suspended claims when one comforter holds distinct recipients", () => {
+    const goalActive = comfortGoal("d");
+    const goalSuspended = comfortGoal("c", "suspended");
+    const colonist = withSuspendedGoal(withCurrentGoal(createColonist("a", "a"), goalActive), goalSuspended);
+    const begunActive = beginExecution(taskDefinition("comfort"), goalActive, 0);
+    const begunSuspended = beginExecution(taskDefinition("comfort"), { ...goalSuspended, status: "active" }, 0);
+    const both: ColonistRuntime = {
+      colonist,
+      execution: begunActive,
+      suspendedExecution: interruptExecution(begunSuspended),
+      ...createFreshMemoryBaselines(),
+    };
+    // Hand-built: active→d and suspended→c. Admission basis claims both; validation must too.
+    const claims = collectComfortClaims([both]);
+    expect([...claims.keys()].sort()).toEqual(["c", "d"]);
+    expect(claims.get("c")).toEqual(["a"]);
+    expect(claims.get("d")).toEqual(["a"]);
+  });
 });

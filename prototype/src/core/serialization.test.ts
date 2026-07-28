@@ -360,6 +360,27 @@ describe("ADR-24 Comfort / Assist persistence pins", () => {
     };
     expect(() => deserialize(JSON.stringify(saved))).toThrow(/relatedSocialTaskId/);
   });
+
+  it("rejects socialOfferCreated with action assist", () => {
+    const state = createInitialState(1, "c1", "Maya");
+    const saved = JSON.parse(serialize(state)) as { eventLog: Array<{ seq: number; tick: number; event: Record<string, unknown> }> };
+    saved.eventLog = [
+      {
+        seq: 0,
+        tick: 0,
+        event: {
+          kind: "socialOfferCreated",
+          offerId: 0,
+          initiatorId: "c1",
+          responderId: "zeke",
+          action: "assist",
+          respondableAtTick: 1,
+          expiresAtTick: 4,
+        },
+      },
+    ];
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/action/);
+  });
 });
 
 describe("malformed-state rejection", () => {

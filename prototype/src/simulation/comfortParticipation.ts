@@ -111,25 +111,25 @@ export function buildComfortParticipationBasis(colonists: readonly ComfortRuntim
 /**
  * Collects every Comfort claim (active or suspended) for state validation.
  * Returns recipient → comforter ids; duplicate recipients are reported by the caller.
+ * A single runtime may contribute two claims when it holds both an active Comfort and a
+ * distinct suspended Comfort (different recipients) — both must be counted so admission and
+ * validateSimulationState enforce the same predicate (design §0.5 / ADR-24 Invariant 12).
  */
 export function collectComfortClaims(
   colonists: readonly ComfortRuntimeView[],
 ): ReadonlyMap<ColonistId, readonly ColonistId[]> {
   const claims = new Map<ColonistId, ColonistId[]>();
+  const add = (recipient: ColonistId, comforterId: ColonistId): void => {
+    const list = claims.get(recipient) ?? [];
+    list.push(comforterId);
+    claims.set(recipient, list);
+  };
   for (const runtime of colonists) {
     const comforterId = runtime.colonist.identity.id;
     const active = activeComfortRecipient(runtime);
-    if (active !== undefined) {
-      const list = claims.get(active) ?? [];
-      list.push(comforterId);
-      claims.set(active, list);
-    }
+    if (active !== undefined) add(active, comforterId);
     const suspended = suspendedComfortRecipient(runtime);
-    if (suspended !== undefined && active === undefined) {
-      const list = claims.get(suspended) ?? [];
-      list.push(comforterId);
-      claims.set(suspended, list);
-    }
+    if (suspended !== undefined && suspended !== active) add(suspended, comforterId);
   }
   return claims;
 }
