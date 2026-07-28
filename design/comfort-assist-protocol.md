@@ -7,7 +7,7 @@
 **Author:** Claude (design task through v0.3.0); Cursor as design author for v0.4.0 (Human Owner role reassignment on PR #152)
 **Tracks:** GitHub issue #151 (parent #119) · PR #152
 **Authority (treated as authoritative):** ADR-17 (Need System — Accepted); ADR-18 D1–D10 (Social Action Space — Accepted); ADR-20 (Relationship Record Storage — Accepted); ADR-21 (Social Offer State Storage — Accepted); ADR-22 (Per-Colonist Runtime Collection — Accepted); `design/social-offer-response-protocol.md` v0.2.0; `design/autonomous-three-colonist-runtime.md` (including its still-deferred DQ-2); `design/engineering-specification.md` v0.3.0; `ai-studio/constitution/architecture-philosophy.md`
-**Companion architecture artifact:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` (Proposed — revised with this v0.4.0 resume-path fix; §14)
+**Companion architecture artifact:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` (Accepted 2026-07-29 — revised with this v0.4.0 resume-path fix; §14)
 **This document is NOT implementation:** no code is written here. It specifies the data shape, deterministic rules, phase placement, and validation Cursor implements exactly.
 
 **Traceability rule:** every decision cites its authorizing source. Every mechanism reused from the current implementation is cited by file and line, verified by reading, not assumed.
@@ -62,7 +62,7 @@ v0.2.0 resolved Codex's three blockers for a Comfort **and** Assist slice. The r
 | D7 Consequences | Both actions | **Comfort only** |
 | D8 Phase placement / PRNG | Both actions | **Comfort only** |
 | D9 Replay / event log / inspector | Both actions | **Comfort only, otherwise unchanged** |
-| D10 ADR determination | "Revision required, not drafted" | **Realized as ADR-24 (Proposed), Comfort-only scope** |
+| D10 ADR determination | "Revision required, not drafted" | **Realized as ADR-24 (Accepted), Comfort-only scope** |
 | D11 Bounded effect & emission | Assist-centred | **Recast: Comfort's bounds in scope (§5.1); Assist analysis retained as deferral rationale (§5.2)** |
 | D12 Participation basis | Comfort + Assist | **Comfort only** |
 | D13 Save version bump | 6 → 7, four unions × 2 members | **6 → 7, four sites, one new member each** |
@@ -481,13 +481,13 @@ In **ADR-24** (§14), because ADR-21 D5 owns the offer store's load rules and si
 
 ## 14. D10 — ADR determination, realized as ADR-24
 
-**An ADR is required before implementation, and it is drafted with this revision:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md`, status **Proposed**.
+**An ADR is required before implementation, and it is drafted with this revision:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md`, status **Accepted** (Human acceptance 2026-07-29; Comfort implementation on `main` via PR #153).
 
 **Why a new ADR rather than editing ADR-21 in place.** ADR-21's own text calls this "a revision of this ADR," but that phrase governs the *process gate* (architecture review + Human acceptance), not the file mechanics. The file mechanics are settled elsewhere and unambiguously: `ai-studio/adr/README.md` — "ADRs are immutable once accepted — superseded decisions get a new ADR that references the old one" — and `ai-studio/SYSTEM_MAP.md` — "Append-only documents (`adr/`, …) … are never edited after being written." ADR-21's own in-place edits were made **during** its review, before acceptance, as its status line records. So the revision is realized as a new numbered ADR that **amends ADR-21 D2 and D5 only**; ADR-21 D1, D3, D4, D6 and Invariants 1–8 continue to govern unchanged, which is why this is an amendment rather than a supersession.
 
 **Number 0024, not 0023.** `origin/codex/issue-142-adr-23` already claims `0023-mission-control-projection-and-control-boundary.md`. README's rule is "never reuse a number"; skipping an in-flight one honors it.
 
-**Not performed by this task, deliberately:** flipping ADR-21's header to `Amended by ADR-24 (D2, D5)` is a one-line edit to an Accepted, append-only document and is an **acceptance-time action for the architecture/Human gate**, not something a draft may do. ADR-24 states this explicitly.
+**Acceptance-time action (performed when ADR-24 Status flipped to Accepted):** ADR-21's header records `Amended by ADR-24 (D2, D5)`.
 
 **ADR-24's scope** (full text in the file): the three-member `SocialOfferAction`; the action-keyed responder-eligibility rule and `responderNotInterruptible`'s generalized meaning with no new reason code; save format v7 with all four sites and the three compatibility cases; the one-comforter-per-recipient **state-level** invariant covering in-progress and suspended Comfort executions (v0.4.0); and the explicit record that `"assist"` is **not** admitted to any persisted union by this ADR, so wiring Assist later is its own architecture gate.
 
