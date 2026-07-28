@@ -16,6 +16,7 @@ import type { Execution } from "../task/execution.js";
 import { MEMORY_TUNING } from "../config/tuning.js";
 import { applyInteraction, createRelationshipStore } from "../colonist/relationships.js";
 import type { ColonistIdentity } from "../colonist/colonist.js";
+import { createPendingOffer } from "../task/socialOffers.js";
 import { deserialize, SAVE_FORMAT_VERSION, serialize } from "./serialization.js";
 
 // reason: these fixtures are deliberately mutated into shapes deserialize() must REJECT (a
@@ -292,6 +293,93 @@ describe("unsupported version rejection", () => {
     const saved = JSON.parse(serialize(state)) as Record<string, unknown>;
     delete saved.version;
     expect(() => deserialize(JSON.stringify(saved))).toThrow();
+  });
+
+  it("rejects a v6 save at the version gate (not a field error)", () => {
+    const state = createInitialState(1, "c1", "Maya");
+    const saved = JSON.parse(serialize(state)) as Record<string, unknown>;
+    saved.version = 6;
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/Unsupported save format version: 6 \(expected 7\)/);
+  });
+});
+
+describe("ADR-24 Comfort / Assist persistence pins", () => {
+  it("round-trips a pending Comfort offer bit-identically", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [{ id: "zeke", name: "Zeke", skills: [], baseTraits: [] }]);
+    const created = createPendingOffer({
+      store: state.socialOffers,
+      initiatorId: "c1",
+      responderId: "zeke",
+      action: "comfort",
+      createdAtTick: 0,
+      responseDelayTicks: 1,
+      offerTimeoutTicks: 4,
+    });
+    const withOffer = { ...state, socialOffers: created.store };
+    const reloaded = deserialize(serialize(withOffer));
+    expect(reloaded.socialOffers).toEqual(withOffer.socialOffers);
+    expect(reloaded.socialOffers.offers[0]?.action).toBe("comfort");
+  });
+
+  it("rejects assist in socialOffers.offers[].action on load", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [{ id: "zeke", name: "Zeke", skills: [], baseTraits: [] }]);
+    const saved = JSON.parse(serialize(state)) as Record<string, unknown>;
+    const socialOffers = saved.socialOffers as { offers: unknown[]; nextOfferSequence: number };
+    socialOffers.offers = [
+      {
+        id: 0,
+        initiatorId: "c1",
+        responderId: "zeke",
+        action: "assist",
+        createdAtTick: 10,
+        respondableAtTick: 11,
+        expiresAtTick: 14,
+        status: "pending",
+        resolvedAtTick: null,
+        reason: null,
+      },
+    ];
+    socialOffers.nextOfferSequence = 1;
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/action/);
+  });
+
+  it("rejects relatedSocialTaskId assist on a persisted goal", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [{ id: "zeke", name: "Zeke", skills: [], baseTraits: [] }]);
+    const saved = JSON.parse(serialize(state)) as {
+      colonists: Array<{ colonist: { currentGoal: Record<string, unknown> | null } }>;
+    };
+    saved.colonists[0]!.colonist.currentGoal = {
+      source: "voluntary",
+      tier: 5,
+      key: "voluntary:social:assist:zeke",
+      relatedColonistId: "zeke",
+      relatedSocialTaskId: "assist",
+      status: "active",
+      motivation: "x",
+      adoptedAtTick: 0,
+    };
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/relatedSocialTaskId/);
+  });
+
+  it("rejects socialOfferCreated with action assist", () => {
+    const state = createInitialState(1, "c1", "Maya");
+    const saved = JSON.parse(serialize(state)) as { eventLog: Array<{ seq: number; tick: number; event: Record<string, unknown> }> };
+    saved.eventLog = [
+      {
+        seq: 0,
+        tick: 0,
+        event: {
+          kind: "socialOfferCreated",
+          offerId: 0,
+          initiatorId: "c1",
+          responderId: "zeke",
+          action: "assist",
+          respondableAtTick: 1,
+          expiresAtTick: 4,
+        },
+      },
+    ];
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/action/);
   });
 });
 

@@ -148,6 +148,23 @@ describe("source 5 — social voluntary candidates from nearby colonists (Stage 
     expect(social.every((c) => c.source === "voluntary" && c.tier === 5)).toBe(true);
   });
 
+  it("generates a Comfort candidate only for a nearby colonist observed stressed", () => {
+    const stressedNearby: readonly ObservableColonist[] = [
+      { id: "zeke", ambientState: "stressed" },
+      { id: "yara", ambientState: "resting" },
+    ];
+    const snapshot = buildSnapshot(advance(createClock(), policy.workTicks + policy.restTicks), policy, world, stressedNearby);
+    const social = generateCandidates(snapshot, createNeeds()).filter((c) => c.relatedColonistId !== undefined);
+    expect(social.map((c) => `${c.relatedSocialTaskId}:${c.relatedColonistId}`).sort()).toEqual([
+      "comfort:zeke",
+      "conversation:yara",
+      "conversation:zeke",
+      "sharedDowntime:yara",
+      "sharedDowntime:zeke",
+    ]);
+    expect(social.every((c) => c.relatedSocialTaskId === "comfort" || c.relatedSocialTaskId === "conversation" || c.relatedSocialTaskId === "sharedDowntime")).toBe(true);
+  });
+
   it("a never-interacted nearby colonist is still reachable as a candidate — generation never consults the relationship store", () => {
     const snapshot = buildSnapshot(advance(createClock(), policy.workTicks + policy.restTicks), policy, world, nearby);
     const candidates = generateCandidates(snapshot, createNeeds());

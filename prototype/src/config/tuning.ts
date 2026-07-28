@@ -53,6 +53,8 @@ export const STRESS_TUNING = {
   restReliefPerTick: 0.0008,
   /** provisional — dissipation per tick while all needs are satisfied. */
   satisfiedReliefPerTick: 0.0003,
+  /** provisional — design DQ-3: dissipation per tick while receiving Comfort (positiveSocialProximity). */
+  positiveSocialProximityReliefPerTick: 0.0005,
   /** provisional — dissipation per tick under sustained stable conditions. */
   stableReliefPerTick: 0.0001,
   /** provisional — stress level at which the Stressed ambient state shows (ADR-05 behavioral threshold). */
@@ -141,6 +143,10 @@ export const TASK_TUNING = {
   sharedMealSocialRestorePerTick: 0.002,
   /** provisional — directional affinity drift per tick from Shared Meal; intentionally low positive. */
   sharedMealAffinityDeltaPerTick: 0.03,
+  /** provisional — design DQ-4: Social need restored per tick of accepted Comfort (both parties). */
+  comfortSocialRestorePerTick: 0.003,
+  /** provisional — design DQ-2: directional affinity drift per tick from Comfort (both directions, mutualSupportCrisis). */
+  comfortAffinityDeltaPerTick: 0.04,
 } as const;
 
 /** Social offer/response calibration (all provisional — design DQ-1–DQ-4, ADR-18 DQ-18.1/18.2). Structural floors (delay >= 1, timeout > delay) are enforced by socialOffers.ts at creation, not here. */
@@ -152,6 +158,17 @@ export const SOCIAL_OFFER_TUNING = {
     neutral: 0.6,
     positive: 0.75,
     bonded: 0.9,
+  } as Readonly<Record<string, number>>,
+  /**
+   * provisional — design DQ-1: Comfort's own acceptance table (must generally exceed Conversation
+   * at comparable bands; Hostile/Fractured never reach the draw — design D4).
+   */
+  comfortAcceptanceProbability: {
+    tense: 0.45,
+    acquainted: 0.65,
+    neutral: 0.7,
+    positive: 0.85,
+    bonded: 0.95,
   } as Readonly<Record<string, number>>,
   /** provisional — DQ-2: ticks between offer creation and earliest resolution (design D3; structural floor of 1 is architecture, this magnitude is pacing). */
   responseDelayTicks: 1,

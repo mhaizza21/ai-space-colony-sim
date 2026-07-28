@@ -189,10 +189,24 @@ describe("clamping", () => {
 });
 
 describe("attribution — every channel always present, decomposable", () => {
-  it("always returns all five channels, even when their contribution is zero", () => {
+  it("always returns all six channels, even when their contribution is zero", () => {
     const result = evaluateStress(createStress(), fullySatisfied(), 100);
     const ids = result.contributions.map((c) => c.id).sort();
-    expect(ids).toEqual(["biologicalStrain", "needsSatisfied", "overwork", "psychNeedDeprivation", "restAdequacy"]);
+    expect(ids).toEqual([
+      "biologicalStrain",
+      "needsSatisfied",
+      "overwork",
+      "positiveSocialProximity",
+      "psychNeedDeprivation",
+      "restAdequacy",
+    ]);
+  });
+
+  it("positiveSocialProximity relief applies only while isReceivingComfort", () => {
+    const idle = evaluateStress(createStress(), fullySatisfied(), 100, [], false, false);
+    const comforted = evaluateStress(createStress(), fullySatisfied(), 100, [], false, true);
+    expect(idle.contributions.find((c) => c.id === "positiveSocialProximity")!.rawDelta).toBe(0);
+    expect(comforted.contributions.find((c) => c.id === "positiveSocialProximity")!.rawDelta).toBeLessThan(0);
   });
 
   it("overwork accumulates only while executing the shift-assignment task (isWorking=true)", () => {

@@ -8,8 +8,10 @@ import {
   createPendingOffer,
   createSocialOfferStore,
   evictResolvedOffers,
+  isEligibleTargetState,
   offerGoalKey,
   resolveOffer,
+  SOCIAL_OFFER_ACTIONS,
   validateSocialOfferStore,
   type SocialOffer,
   type SocialOfferStore,
@@ -239,5 +241,40 @@ describe("validateSocialOfferStore — validate-never-repair (ADR-21 D5)", () =>
   it("rejects unrecognized fields", () => {
     expect(() => validateSocialOfferStore(raw([{ ...pending(), derivedState: "positive" }], 1), KNOWN, 20)).toThrow(/unrecognized/);
     expect(() => validateSocialOfferStore({ offers: [], nextOfferSequence: 0, extra: 1 }, KNOWN, 20)).toThrow(/unrecognized/);
+  });
+
+  it("rejects assist as an out-of-union action", () => {
+    expect(() =>
+      validateSocialOfferStore(raw([{ ...pending(), action: "assist" }], 1), KNOWN, 20),
+    ).toThrow(/action/);
+  });
+});
+
+describe("ADR-24 Comfort offer action", () => {
+  it("SOCIAL_OFFER_ACTIONS is closed at exactly three members and excludes assist", () => {
+    expect(SOCIAL_OFFER_ACTIONS).toEqual(["conversation", "sharedDowntime", "comfort"]);
+    expect(SOCIAL_OFFER_ACTIONS).not.toContain("assist");
+  });
+
+  it("isEligibleTargetState is action-keyed — comfort admits stressed only", () => {
+    expect(isEligibleTargetState("comfort", "stressed")).toBe(true);
+    expect(isEligibleTargetState("comfort", "resting")).toBe(false);
+    expect(isEligibleTargetState("conversation", "resting")).toBe(true);
+    expect(isEligibleTargetState("conversation", "stressed")).toBe(false);
+    expect(isEligibleTargetState("sharedDowntime", "eating")).toBe(true);
+  });
+
+  it("createPendingOffer accepts comfort actions", () => {
+    const created = createPendingOffer({
+      store: createSocialOfferStore(),
+      initiatorId: "c1",
+      responderId: "zeke",
+      action: "comfort",
+      createdAtTick: 10,
+      responseDelayTicks: 1,
+      offerTimeoutTicks: 4,
+    });
+    expect(created.offer.action).toBe("comfort");
+    expect(offerGoalKey(created.offer)).toBe("voluntary:social:comfort:zeke");
   });
 });

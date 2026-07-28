@@ -68,7 +68,7 @@ function candidateTaskIdsFor(
   source: GoalSource,
   relatedNeed: NeedId | undefined,
   relatedColonistId: string | undefined,
-  relatedSocialTaskId: "conversation" | "sharedDowntime" | undefined,
+  relatedSocialTaskId: "conversation" | "sharedDowntime" | "comfort" | undefined,
 ): readonly TaskId[] {
   switch (source) {
     case "shiftAssignment":
@@ -150,7 +150,7 @@ function findServingTask(
   source: GoalSource,
   relatedNeed: NeedId | undefined,
   relatedColonistId: string | undefined,
-  relatedSocialTaskId: "conversation" | "sharedDowntime" | undefined,
+  relatedSocialTaskId: "conversation" | "sharedDowntime" | "comfort" | undefined,
   skills: readonly string[],
   snapshot: WorldSnapshot,
 ): TaskSearchResult {
@@ -212,7 +212,7 @@ export function candidateActionability(
   source: GoalSource,
   relatedNeed: NeedId | undefined,
   relatedColonistId: string | undefined,
-  relatedSocialTaskId: "conversation" | "sharedDowntime" | undefined,
+  relatedSocialTaskId: "conversation" | "sharedDowntime" | "comfort" | undefined,
   skills: readonly string[],
   snapshot: WorldSnapshot,
 ): TaskSearchResult {
@@ -243,13 +243,13 @@ export function isTaskComplete(
       return snapshot.currentPeriod !== "free";
     case "conversation":
     case "sharedDowntime":
+    case "comfort":
       return snapshot.currentPeriod !== "free";
     case "sharedMeal":
-    case "comfort":
     case "assist":
     case "confrontation":
       // Not adopted in this slice; real completion criteria are a wiring-step decision
-      // (ADR-18 D5's participation rules).
+      // (ADR-18 D5's participation rules). Assist stays unreachable by Human ruling (Slice 7).
       return false;
   }
 }
