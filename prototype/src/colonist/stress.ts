@@ -34,7 +34,8 @@ export type StressChannelId =
   | "overwork"
   | "restAdequacy"
   | "needsSatisfied"
-  | "positiveSocialProximity";
+  | "positiveSocialProximity"
+  | "hostileProximityConflict";
 
 /** Stress level only — 0 (none) to 1 (maximal). Attribution is returned per call, not stored (S2 owns retention). */
 export interface StressState {
@@ -92,15 +93,27 @@ function countBiologicalStrain(needs: NeedsState, traits: readonly TraitId[]): n
 }
 
 /**
+ * Hook-only Stress Response multiplier for the `hostileProximityConflict` channel
+ * (design/confrontation-conflict-protocol.md D5 Finding 1). Every currently-defined TraitId
+ * returns exactly 1 — this slice does not deliver ADR-18 D8 Resilient/Volatile scaling and
+ * invents no `"volatile"` trait. Future trait content may supply a real value through this hook.
+ */
+export function stressResponseConflictMultiplier(_traits: readonly TraitId[]): number {
+  return 1;
+}
+
+/**
  * Evaluates stress for one tick span from need state, plus whether the colonist is currently
  * executing the shift-assignment task (overwork's only local signal — tick.ts is the only
  * caller with M12 execution status, so it is the only caller that can supply this) and whether
  * they are named as a Comfort recipient this tick (`isReceivingComfort` — from D12's immutable
- * basis, never a live cross-runtime read). Pure: same inputs, same result. `ticks` must be a
- * non-negative integer count of elapsed in-game ticks. Every channel is always represented in
- * `contributions`, zero-valued when inactive, so a caller can show "no rest relief this tick"
- * as explicitly as "rest relief: -0.0008" — decomposability is a property of the return shape,
- * not something callers must reconstruct.
+ * basis, never a live cross-runtime read). `conflictSpike` is the one-shot Confrontation
+ * magnitude (0 when not firing); the hostileProximityConflict channel uses it directly, not
+ * rate×ticks. Pure: same inputs, same result. `ticks` must be a non-negative integer count of
+ * elapsed in-game ticks. Every channel is always represented in `contributions`, zero-valued
+ * when inactive, so a caller can show "no rest relief this tick" as explicitly as
+ * "rest relief: -0.0008" — decomposability is a property of the return shape, not something
+ * callers must reconstruct.
  */
 export function evaluateStress(
   state: StressState,
@@ -109,6 +122,7 @@ export function evaluateStress(
   traits: readonly TraitId[] = [],
   isWorking = false,
   isReceivingComfort = false,
+  conflictSpike = 0,
 ): StressUpdateResult {
   if (!Number.isInteger(ticks) || ticks < 0) {
     throw new Error(`evaluateStress ticks must be a non-negative integer, got ${ticks}`);
@@ -128,6 +142,10 @@ export function evaluateStress(
     {
       id: "positiveSocialProximity",
       rawDelta: isReceivingComfort ? -STRESS_TUNING.positiveSocialProximityReliefPerTick * ticks : 0,
+    },
+    {
+      id: "hostileProximityConflict",
+      rawDelta: conflictSpike * stressResponseConflictMultiplier(traits),
     },
   ];
 

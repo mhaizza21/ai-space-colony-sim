@@ -61,6 +61,35 @@ export const STRESS_TUNING = {
   stressedStateThreshold: 0.6,
   /** provisional — stress level past which demanding-candidate weights are suppressed. */
   taskAcceptanceThreshold: 0.7,
+  /**
+   * provisional — design DQ-1 / DQ-18.3: combined-stress bar for Fractured-involving pairs
+   * (strictly below hostileConflictStressThreshold). Sum of two [0,1] levels → [0,2].
+   */
+  fracturedConflictStressThreshold: 0.9,
+  /**
+   * provisional — design DQ-1 / DQ-18.3: combined-stress bar for Hostile-only pairs
+   * (strictly above fracturedConflictStressThreshold).
+   */
+  hostileConflictStressThreshold: 1.3,
+  /** provisional — design DQ-5: one-shot hostileProximityConflict spike magnitude (not rate×ticks). */
+  hostileProximityConflictSpike: 0.15,
+} as const;
+
+/**
+ * Confrontation / In Conflict calibration (all provisional — design DQ-1–DQ-5).
+ * Thresholds live on STRESS_TUNING (design D2); fire probability, display window, and affinity
+ * delta live here.
+ */
+export const CONFLICT_TUNING = {
+  /** provisional — design DQ-2: uniform fire probability once the conjunction holds. */
+  conflictFireProbability: 0.25,
+  /**
+   * provisional — design DQ-3: ticks the `inConflict` ambient overlay lasts after a firing
+   * Confrontation (structural floor >= 1 is architecture; this magnitude is pacing).
+   */
+  inConflictDisplayTicks: 3,
+  /** provisional — design DQ-4: symmetric negative affinity via directConflict (both directions). */
+  directConflictAffinityDelta: -12,
 } as const;
 
 /** Weight-composition calibration (all provisional — DQ-D1 weight portion; bounds enforce bound-never-veto, locked #25). */

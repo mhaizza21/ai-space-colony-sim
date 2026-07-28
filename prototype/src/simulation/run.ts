@@ -57,7 +57,12 @@ export function createInitialState(
 
 /** A fresh, inert runtime container for a newly created colonist: no execution, fresh baselines. */
 export function freshRuntime(colonist: ColonistRuntime["colonist"]): ColonistRuntime {
-  return { colonist, execution: null, suspendedExecution: null, ...createFreshMemoryBaselines() };
+  return {
+    colonist,
+    execution: null,
+    suspendedExecution: null,
+    ...createFreshMemoryBaselines(),
+  };
 }
 
 /** The full result of a headless run: final state plus the concatenated event trace across every tick. */

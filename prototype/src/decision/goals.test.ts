@@ -130,8 +130,8 @@ describe("source 5 — trait-weighted voluntary behavior (tier 5)", () => {
 
 describe("source 5 — social voluntary candidates from nearby colonists (Stage 2 build step 6, ADR-20 D3)", () => {
   const nearby: readonly ObservableColonist[] = [
-    { id: "zeke", ambientState: "idle" },
-    { id: "yara", ambientState: "working" },
+    { id: "zeke", ambientState: "idle", moduleId: null },
+    { id: "yara", ambientState: "working", moduleId: "workstation" },
   ];
 
   it("generates companionship social candidates per snapshot-reported nearby colonist, tagged with target and action", () => {
@@ -150,8 +150,8 @@ describe("source 5 — social voluntary candidates from nearby colonists (Stage 
 
   it("generates a Comfort candidate only for a nearby colonist observed stressed", () => {
     const stressedNearby: readonly ObservableColonist[] = [
-      { id: "zeke", ambientState: "stressed" },
-      { id: "yara", ambientState: "resting" },
+      { id: "zeke", ambientState: "stressed", moduleId: null },
+      { id: "yara", ambientState: "resting", moduleId: "restBunk" },
     ];
     const snapshot = buildSnapshot(advance(createClock(), policy.workTicks + policy.restTicks), policy, world, stressedNearby);
     const social = generateCandidates(snapshot, createNeeds()).filter((c) => c.relatedColonistId !== undefined);
@@ -163,6 +163,15 @@ describe("source 5 — social voluntary candidates from nearby colonists (Stage 
       "sharedDowntime:zeke",
     ]);
     expect(social.every((c) => c.relatedSocialTaskId === "comfort" || c.relatedSocialTaskId === "conversation" || c.relatedSocialTaskId === "sharedDowntime")).toBe(true);
+  });
+
+  it("never produces a Confrontation-related GoalCandidate (design D3 encounter-only)", () => {
+    const snapshot = buildSnapshot(advance(createClock(), policy.workTicks + policy.restTicks), policy, world, nearby);
+    for (const c of generateCandidates(snapshot, createNeeds())) {
+      expect(c.relatedSocialTaskId).not.toBe("confrontation");
+      expect(c.key).not.toMatch(/confrontation/i);
+      expect(JSON.stringify(c)).not.toMatch(/confrontation/i);
+    }
   });
 
   it("a never-interacted nearby colonist is still reachable as a candidate — generation never consults the relationship store", () => {

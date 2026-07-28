@@ -34,8 +34,8 @@
 // step-by-step advance would have caught. Larger timeline advancement is run()'s job, calling
 // tick() once per step (run.ts).
 
-import { BASE_TICKS_PER_STEP, NEEDS, type NeedId, type PriorityTier } from "../config/constants.js";
-import { TASK_TUNING } from "../config/tuning.js";
+import { BASE_TICKS_PER_STEP, NEEDS, type NeedId, type ModuleId, type PriorityTier } from "../config/constants.js";
+import { CONFLICT_TUNING, SOCIAL_OFFER_TUNING, STRESS_TUNING, TASK_TUNING } from "../config/tuning.js";
 import type { ClockState } from "../core/clock.js";
 import { advance, tickOfDay } from "../core/clock.js";
 import type { PrngState } from "../core/prng.js";
@@ -68,7 +68,7 @@ import {
   type Goal,
 } from "../decision/goals.js";
 import { decideFromCandidates, type DecisionOutcome } from "../decision/decide.js";
-import { isTaskComplete, resolveTask, type TaskId, type TaskResolution } from "../task/tasks.js";
+import { isTaskComplete, resolveTask, taskDefinition, type TaskId, type TaskResolution } from "../task/tasks.js";
 import {
   createPendingOffer,
   evictResolvedOffers,
@@ -80,9 +80,9 @@ import {
   type SocialOfferStatus,
   type SocialOfferStore,
 } from "../task/socialOffers.js";
-import { SOCIAL_OFFER_TUNING } from "../config/tuning.js";
 import { next } from "../core/prng.js";
 import { buildComfortParticipationBasis, collectComfortClaims } from "./comfortParticipation.js";
+import { detectConfrontations } from "./conflictDetection.js";
 import {
   abortExecution,
   ambientStateFor,
@@ -121,6 +121,12 @@ export interface ColonistRuntime {
   readonly deprivationBaselines: Readonly<Record<NeedId, number>>;
   readonly stressBaseline: number;
   readonly relationshipAffinityBaselines: Readonly<Record<string, number>>;
+  /**
+   * ADR-25 D1: time-bounded `In Conflict` ambient overlay. Set to `clock.tick +
+   * CONFLICT_TUNING.inConflictDisplayTicks` when Confrontation fires; otherwise null.
+   * A non-null value already `<=` the current clock is valid inert state (display lapsed).
+   */
+  readonly inConflictUntilTick: number | null;
 }
 
 export interface SimulationState {
@@ -210,6 +216,14 @@ export type TickEvent =
       readonly offerId: number;
       readonly status: Exclude<SocialOfferStatus, "pending">;
       readonly reason: OfferResolutionReason | null;
+    }
+  | {
+      readonly kind: "confrontationOccurred";
+      readonly colonistAId: string;
+      readonly colonistBId: string;
+      readonly sharedModuleId: ModuleId;
+      readonly combinedStress: number;
+      readonly severity: "hostile" | "fractured";
     };
 
 export interface TickResult {
@@ -379,14 +393,14 @@ function finish(state: SimulationState, events: readonly TickEvent[]): TickResul
   return { state: withLogs, events };
 }
 
-/** Fresh memory-formation baselines for a newly arrived colonist: needs at 1 (matches createNeeds), stress at 0 (matches createStress), no relationship partners observed yet. */
+/** Fresh memory-formation baselines for a newly arrived colonist: needs at 1 (matches createNeeds), stress at 0 (matches createStress), no relationship partners observed yet. Also seeds `inConflictUntilTick: null` (ADR-25). */
 export function createFreshMemoryBaselines(): Pick<
   ColonistRuntime,
-  "deprivationBaselines" | "stressBaseline" | "relationshipAffinityBaselines"
+  "deprivationBaselines" | "stressBaseline" | "relationshipAffinityBaselines" | "inConflictUntilTick"
 > {
   const deprivationBaselines = {} as Record<NeedId, number>;
   for (const id of NEEDS) deprivationBaselines[id] = 1;
-  return { deprivationBaselines, stressBaseline: 0, relationshipAffinityBaselines: {} };
+  return { deprivationBaselines, stressBaseline: 0, relationshipAffinityBaselines: {}, inConflictUntilTick: null };
 }
 
 function socialNeedRestorePerTick(taskId: TaskId): number {
@@ -713,9 +727,17 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
   // excluded where applicable): the structural mechanism that makes same-tick non-observability
   // hold — no colonist's Phase 5 commitment or Phase 6 execution-begin can appear in it, because
   // it is fixed before Phase 5 begins for anyone and never rebuilt afterward this tick.
+  const moduleIdForExecution = (execution: Execution | null): ModuleId | null => {
+    if (execution === null || execution.status !== "inProgress") return null;
+    return taskDefinition(execution.taskId).moduleId;
+  };
   const sharedObservations: ObservableColonist[] = ids.map((id) => {
     const rt = runtimes.get(id)!;
-    return { id, ambientState: ambientStateFor(rt.execution, rt.colonist.stress) };
+    return {
+      id,
+      ambientState: ambientStateFor(rt.execution, rt.colonist.stress, rt.inConflictUntilTick, clock.tick),
+      moduleId: moduleIdForExecution(rt.execution),
+    };
   });
   const snapshotFor = (ownId: string): WorldSnapshot =>
     buildSnapshot(clock, state.policy, world, sharedObservations.filter((o) => o.id !== ownId));
@@ -764,6 +786,66 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
       }
     }
     resumeFromSuspension.set(id, resumed);
+  }
+
+  // --- Phase 4 continued: Confrontation detection (design D7/D8) — after the shared observation
+  // basis and interruption/suspension-resolved block, before Phase 5. Conjunction inputs are the
+  // fixed sharedObservations moduleIds plus each colonist's Phase-3 stress; never live post-
+  // interruption execution. Encounter-only: no goal/offer/execution creation.
+  {
+    const conflictObservations = sharedObservations.map((o) => ({
+      id: o.id,
+      moduleId: o.moduleId,
+      stressLevel: runtimes.get(o.id)!.colonist.stress.level,
+    }));
+    const detected = detectConfrontations(conflictObservations, relationships, prng);
+    prng = detected.prng;
+    for (const fire of detected.fired) {
+      const interaction = applyInteraction(relationships, {
+        colonistAId: fire.colonistAId,
+        colonistBId: fire.colonistBId,
+        tick: clock.tick,
+        changeSource: "directConflict",
+        initiatorId: null,
+        responderId: null,
+        aTowardBDelta: CONFLICT_TUNING.directConflictAffinityDelta,
+        bTowardADelta: CONFLICT_TUNING.directConflictAffinityDelta,
+      });
+      relationships = interaction.store;
+      relationshipConsequences.push(...interaction.consequences);
+
+      const untilTick = clock.tick + CONFLICT_TUNING.inConflictDisplayTicks;
+      for (const participantId of [fire.colonistAId, fire.colonistBId]) {
+        const rt = runtimes.get(participantId)!;
+        const traits = rt.colonist.identity.baseTraits;
+        // One-shot spike via evaluateStress input (ticks=0 so ongoing channels stay zero —
+        // design D7: do not re-apply Phase 3 rate×ticks).
+        const stressResult = evaluateStress(
+          rt.colonist.stress,
+          rt.colonist.needs,
+          0,
+          traits,
+          false,
+          false,
+          STRESS_TUNING.hostileProximityConflictSpike,
+        );
+        events.push({ kind: "stressEvaluated", contributions: stressResult.contributions });
+        runtimes.set(participantId, {
+          ...rt,
+          colonist: withStress(rt.colonist, stressResult.state),
+          inConflictUntilTick: untilTick,
+        });
+      }
+
+      events.push({
+        kind: "confrontationOccurred",
+        colonistAId: fire.colonistAId,
+        colonistBId: fire.colonistBId,
+        sharedModuleId: fire.sharedModuleId,
+        combinedStress: fire.combinedStress,
+        severity: fire.severity,
+      });
+    }
   }
 
   // --- Phase: decisions (design D2 phase 5) — per colonist, canonical order (EQ-3 / ADR-22 D2:

@@ -157,7 +157,12 @@ export function inspect(state: SimulationState, recentLimit = 10): InspectionSum
       identity: detach(runtime.colonist.identity),
       needs,
       stress: runtime.colonist.stress.level,
-      ambientState: ambientStateFor(runtime.execution, runtime.colonist.stress),
+      ambientState: ambientStateFor(
+        runtime.execution,
+        runtime.colonist.stress,
+        runtime.inConflictUntilTick,
+        state.clock.tick,
+      ),
       currentGoal: detach(runtime.colonist.currentGoal),
       suspendedGoal: detach(runtime.colonist.suspendedGoal),
       execution: detach(runtime.execution),

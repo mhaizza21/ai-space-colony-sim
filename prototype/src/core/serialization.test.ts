@@ -295,11 +295,11 @@ describe("unsupported version rejection", () => {
     expect(() => deserialize(JSON.stringify(saved))).toThrow();
   });
 
-  it("rejects a v6 save at the version gate (not a field error)", () => {
+  it("rejects a v7 save at the version gate (not a field error)", () => {
     const state = createInitialState(1, "c1", "Maya");
     const saved = JSON.parse(serialize(state)) as Record<string, unknown>;
-    saved.version = 6;
-    expect(() => deserialize(JSON.stringify(saved))).toThrow(/Unsupported save format version: 6 \(expected 7\)/);
+    saved.version = 7;
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/Unsupported save format version: 7 \(expected 8\)/);
   });
 });
 
@@ -741,5 +741,107 @@ describe("purity", () => {
     const broken = { ...state, world: setModuleFunctional(state.world, "foodStation", false) };
     const roundTripped = deserialize(serialize(broken));
     expect(roundTripped).toEqual(broken);
+  });
+});
+
+describe("ADR-25 Confrontation / In Conflict persistence (save format v8)", () => {
+  const zeke = { id: "zeke", name: "Zeke", skills: [], baseTraits: [] };
+
+  it("round-trips mid-window, expired, and null inConflictUntilTick bit-identically", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [zeke]);
+    const advanced = { ...state, clock: { ...state.clock, tick: 10 } };
+    const [c1, z] = advanced.colonists;
+    const patched: typeof state = {
+      ...advanced,
+      colonists: [
+        { ...c1!, inConflictUntilTick: 15 }, // mid-window (future)
+        { ...z!, inConflictUntilTick: 5 }, // expired (<= clock)
+      ],
+    };
+    const roundTripped = deserialize(serialize(patched));
+    expect(roundTripped.colonists[0]!.inConflictUntilTick).toBe(15);
+    expect(roundTripped.colonists[1]!.inConflictUntilTick).toBe(5);
+    expect(roundTripped).toEqual(patched);
+  });
+
+  it("rejects non-integer or negative inConflictUntilTick", () => {
+    const state = createInitialState(1, "c1", "Maya");
+    const saved = JSON.parse(serialize(state)) as { colonists: Array<Record<string, unknown>> };
+    saved.colonists[0]!.inConflictUntilTick = -1;
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/inConflictUntilTick/);
+    saved.colonists[0]!.inConflictUntilTick = 1.5;
+    expect(() => deserialize(JSON.stringify(saved))).toThrow(/inConflictUntilTick/);
+  });
+
+  it("round-trips confrontationOccurred and hostileProximityConflict contributions", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [zeke]);
+    const withEvent = {
+      ...state,
+      eventLog: [
+        {
+          seq: 0,
+          tick: 0,
+          event: {
+            kind: "confrontationOccurred" as const,
+            colonistAId: "c1",
+            colonistBId: "zeke",
+            sharedModuleId: "workstation" as const,
+            combinedStress: 1.4,
+            severity: "hostile" as const,
+          },
+        },
+        {
+          seq: 1,
+          tick: 0,
+          event: {
+            kind: "stressEvaluated" as const,
+            contributions: [{ id: "hostileProximityConflict" as const, rawDelta: 0.15 }],
+          },
+        },
+      ],
+    };
+    const roundTripped = deserialize(serialize(withEvent));
+    expect(roundTripped.eventLog).toEqual(withEvent.eventLog);
+  });
+
+  it("rejects malformed confrontationOccurred payloads (ADR-25 D2a/D4)", () => {
+    const state = createInitialState(1, "c1", "Maya", [], [], [zeke]);
+    const base = JSON.parse(serialize(state)) as {
+      eventLog: Array<{ seq: number; tick: number; event: Record<string, unknown> }>;
+    };
+    const inject = (event: Record<string, unknown>) => {
+      const saved = structuredClone(base);
+      saved.eventLog = [{ seq: 0, tick: 0, event }];
+      return () => deserialize(JSON.stringify(saved));
+    };
+    const good = {
+      kind: "confrontationOccurred",
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      sharedModuleId: "workstation",
+      combinedStress: 1.4,
+      severity: "hostile",
+    };
+    expect(inject({ ...good, colonistAId: "c1", colonistBId: "c1" })).toThrow(/self-pair/i);
+    expect(inject({ ...good, colonistAId: "zeke", colonistBId: "c1" })).toThrow(/canonical/i);
+    expect(inject({ ...good, sharedModuleId: "bridge" })).toThrow(/sharedModuleId/);
+    expect(inject({ ...good, combinedStress: 2.5 })).toThrow(/combinedStress/);
+    expect(inject({ ...good, severity: "tense" })).toThrow(/severity/);
+    expect(inject({ ...good, colonistBId: "yara" })).toThrow(/unknown colonist/);
+  });
+
+  it("rejects unknown stress channel id on stressEvaluated", () => {
+    const state = createInitialState(1, "c1", "Maya");
+    const saved = JSON.parse(serialize(state)) as {
+      eventLog: Array<{ seq: number; tick: number; event: Record<string, unknown> }>;
+    };
+    saved.eventLog = [
+      {
+        seq: 0,
+        tick: 0,
+        event: { kind: "stressEvaluated", contributions: [{ id: "notAChannel", rawDelta: 1 }] },
+      },
+    ];
+    expect(() => deserialize(JSON.stringify(saved))).toThrow();
   });
 });

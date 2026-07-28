@@ -96,8 +96,8 @@ describe("snapshot is the only world-to-decision read path (structural note)", (
 
 describe("nearbyColonists population (Stage 2 build step 4, ADR-20 D3)", () => {
   const nearby: readonly ObservableColonist[] = [
-    { id: "zeke", ambientState: "working" },
-    { id: "yara", ambientState: "resting" },
+    { id: "zeke", ambientState: "working", moduleId: "workstation" },
+    { id: "yara", ambientState: "resting", moduleId: "restBunk" },
   ];
 
   it("populates nearbyColonists from a given list at 3-colonist scale", () => {
