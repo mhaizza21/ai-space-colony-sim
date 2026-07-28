@@ -1,6 +1,7 @@
 # ADR-22 - Per-Colonist Runtime Collection
 
 **Status:** Accepted (architecture review + Human acceptance 2026-07-17, issue #130)
+**Amended by:** ADR-25 (D1, D6) — Conflict runtime state and save format v8 (Accepted 2026-07-29, issue #155)
 **Date:** 2026-07-17
 **Phase:** Phase 3 - Stage 2 Slice 6 architecture gate
 **Deciders:** Project owner, Technical Architect
