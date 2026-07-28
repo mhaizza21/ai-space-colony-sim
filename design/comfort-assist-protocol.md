@@ -62,7 +62,7 @@ v0.2.0 resolved Codex's three blockers for a Comfort **and** Assist slice. The r
 | D7 Consequences | Both actions | **Comfort only** |
 | D8 Phase placement / PRNG | Both actions | **Comfort only** |
 | D9 Replay / event log / inspector | Both actions | **Comfort only, otherwise unchanged** |
-| D10 ADR determination | "Revision required, not drafted" | **Realized as ADR-24 (Proposed), Comfort-only scope** |
+| D10 ADR determination | "Revision required, not drafted" | **Realized as ADR-24 (Accepted), Comfort-only scope** |
 | D11 Bounded effect & emission | Assist-centred | **Recast: Comfort's bounds in scope (§5.1); Assist analysis retained as deferral rationale (§5.2)** |
 | D12 Participation basis | Comfort + Assist | **Comfort only** |
 | D13 Save version bump | 6 → 7, four unions × 2 members | **6 → 7, four sites, one new member each** |
