@@ -1,10 +1,10 @@
 # ADR-25 - Conflict Runtime State and Save Format v8
 
-**Status:** Proposed (revision 2 - closes review round 1 findings B1/B2; see Kanban Update)
-**Date:** 2026-07-29 (revision 2)
+**Status:** Accepted (architecture review + Human acceptance 2026-07-29, issue #155; design PR #156 Human-approved at `e61ae83` with Codex Approved-with-nits at `f1ff024`)
+**Date:** 2026-07-29 (revision 2; Accepted 2026-07-29)
 **Phase:** Phase 3 - Stage 2 Slice 8 architecture gate
 **Deciders:** Project owner, Technical Architect
-**Tracks:** GitHub issue #155 (parent #119), design PR (Confrontation/`In Conflict` design)
+**Tracks:** GitHub issue #155 (parent #119), design PR #156
 **Amends:** **ADR-22 (Accepted) - D1 and D6 only.** ADR-22 D2, D3, D4, D5 and its Required Invariants continue to govern unchanged; this ADR is an amendment of two decisions, not a supersession of the record.
 **Governed by:** ADR-18 (Accepted - the Social Action Space that names Confrontation and `In Conflict` and authorizes their behavioral vocabulary), ADR-20 (Accepted - `directConflict`, already an accepted, unused `RelationshipChangeSource` member; unchanged by this ADR), ADR-22 (Accepted - the per-colonist runtime collection this ADR amends), ADR-24 (Accepted - the direct structural precedent this ADR follows for amending rather than superseding), `design/confrontation-conflict-protocol.md` v0.2.0 (the behavioral design this ADR gives a storage home; D6, D8, D9 are this ADR's exact scope), `design/engineering-specification.md` v0.3.0, `ai-studio/constitution/architecture-philosophy.md`
 
@@ -33,7 +33,7 @@ Identical reasoning to ADR-24's own, applied to the correct owner this time. `ai
 
 **This is not an amendment of ADR-21/ADR-24.** Those govern the social-offer store exclusively; Confrontation never touches it (ADR-18 D3). Filing this as an ADR-21/ADR-24 amendment would misattribute the trigger to the wrong owning decision.
 
-**Acceptance gate action:** ADR-22's header is flipped to `Amended by ADR-25 (D1, D6)` in the same acceptance change that sets this Status to Accepted - mirroring exactly how ADR-24's acceptance flipped ADR-21's header.
+**Acceptance gate completed:** ADR-22's header records `Amended by ADR-25 (D1, D6)` in the same acceptance change that sets this Status to Accepted - mirroring exactly how ADR-24's acceptance flipped ADR-21's header.
 
 **Numbering:** 0025 is the next free number after 0024 (Accepted 2026-07-29); no in-flight branch claims it as of this writing.
 
@@ -220,12 +220,11 @@ Additional to ADR-22's thirteen (as amended by ADR-24), which all continue to ho
 ## Kanban Update
 
 **Card:** [Phase 3] ADR-25 - Conflict Runtime State and Save Format v8
-**Status:** Review - revision 2 after Codex design/architecture review round 1 returned Changes Required (two blockers, three warnings). Both blockers and all three warnings are closed at this revision (see Follow-up Tasks / this file's own D2a, D3, D4, Options F). Awaiting Codex re-review at the new head and Human acceptance; not yet Accepted, and ADR-22's header is not yet flipped.
-**Completed (revision 2):** Added D2a - a new persisted `TickEvent` variant, `confrontationOccurred`, with full payload schema, its own load-rejection rules (self-pair, ordering, `ModuleId`/stress-range/severity validity), and its site added to D3's table (now three sites) and Required Invariants (new #19) - closes **B1** (the event was named by the design but ungoverned by this ADR). Corrected D4/Invariant 15/18 and added Option F to make explicit and unambiguous that a non-null `inConflictUntilTick` `<=` the loaded `clock.tick` is **valid, inert state, never rejected** - closes **B2** (the design and this ADR previously disagreed; the design is now corrected to match this ADR, see its own changelog). Fixed a header typo (D2 said "six-member union," body said seven).
-**Completed (revision 1):** Drafted `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md` - the `ColonistRuntime` field addition (D1), the `StressChannelId` widening to seven members (D2), save format v8 (D3), the amended load-rejection list including the explicit non-need for a cross-colonist invariant (D4), an explicit statement of what remains unchanged in ADR-22 (D5), required invariants additional to ADR-22's thirteen, options considered, and pre-implementation validation requirements - following ADR-24's amendment shape precisely, scoped to the correct owning ADR (22, not 21/24) for this slice's actual trigger.
+**Status:** Done - architecture review + Human acceptance recorded 2026-07-29 (issue #155 / design PR #156); Status flipped to Accepted; ADR-22 header amended.
+**Completed:** Accepted `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md` as the governing storage contract for Slice 8 Confrontation / `In Conflict` (`inConflictUntilTick`, `hostileProximityConflict`, `confrontationOccurred` / save v8). Human rulings recorded with design approval: hook-only trait modulation; shared-module proxy narrowness.
 **Changed Files:**
-  MODIFIED  ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md
-**Validation:** Every decision traced to `design/confrontation-conflict-protocol.md` v0.2.0 D6/D7/D8/D9, ADR-18 D3/D8, ADR-20 D5, ADR-22 D1-D6, ADR-24's own amendment precedent and its D3 site-3 `eventLog[].event` widening precedent (reused for D2a); confirmed no accepted decision in ADR-22 D2-D5 or ADR-20/ADR-21/ADR-24 is reopened; confirmed the social-offer store is untouched; confirmed this revision and the design's own revision now state the `inConflictUntilTick`-vs-`clock.tick` rule identically (Option A/no-reject), removing the B2 contradiction.
-**Follow-up Tasks:** None beyond Issue #155's own tracked sequence - Codex re-review of this exact revision, then Human acceptance, before any implementation begins.
-
-**Not committed** per instruction - acceptance is the architecture review's decision, not this draft's.
+  MODIFIED ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md (Status → Accepted; Tracks; Kanban)
+  MODIFIED ai-studio/adr/0022-per-colonist-runtime-collection.md (header: Amended by ADR-25 (D1, D6))
+  MODIFIED design/confrontation-conflict-protocol.md (Status Human-approved; companion ADR Accepted)
+**Validation:** Acceptance records the contract Human-approved on PR #156 after Codex Approved-with-nits. No runtime changes in this gate. Implementation remains blocked until a dedicated Slice 8 implementation PR.
+**Follow-up Tasks:** Cursor implements Slice 8 per approved design + Accepted ADR-25. Assist remains deferred.

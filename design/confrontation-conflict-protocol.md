@@ -2,9 +2,10 @@
 
 **Version:** 0.2.0 (revision 2 — closes Codex review round 1 findings B1/B2/W1–W3; see Changelog)
 **Phase:** Phase 3 — Stage 2 Slice 8
-**Status:** Draft — revision 2, awaiting Codex re-review at the new head, then Human approval (`docs/ai-workflow/operating-model.md` Design → Human Approval gate)
+**Status:** Human-approved 2026-07-29 (PR #156; Codex Approved with nits at `f1ff024`; nit-fix head `e61ae83`) — awaiting ADR-25 Accepted before implementation
 **Author:** Claude (design task)
 **Tracks:** GitHub issue #155 (parent #119)
+**Companion architecture artifact:** `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md` (Accepted 2026-07-29)
 **Authority (treated as authoritative):** ADR-17 (Need System — Accepted); ADR-18 D1–D10 (Social Action Space — Accepted; Confrontation's own governing decisions, D4/D6/D7/D8/D9/D10); ADR-20 (Relationship Record Storage — Accepted); ADR-21 (Social Offer State Storage — Accepted) and ADR-24 (its amendment); ADR-22 (Per-Colonist Runtime Collection — Accepted); `design/social-offer-response-protocol.md` v0.2.0; `design/autonomous-three-colonist-runtime.md`; `design/comfort-assist-protocol.md` v0.4.0 (the sibling Support-category design; its `comfortParticipation.ts`-style immutable-basis pattern is reused here); `design/engineering-specification.md` v0.3.0 (seven-phase order, determinism obligations); `design/phase-2-architecture-freeze.md` (the only accessible source for "ADR-08"/"ADR-12" language ADR-18 cites — those numbers are not present as files under `ai-studio/adr/`; every claim attributed to them below is quoted from ADR-18's own restatement, not independently re-derived); `ai-studio/constitution/architecture-philosophy.md`
 **This document is NOT implementation:** no code is written here. It specifies the data shape, deterministic rules, phase placement, and validation Cursor implements exactly, and the ADR this shape requires before implementation.
 
@@ -127,7 +128,7 @@ Save format bumps from v7 to v8 (one new `ColonistRuntime` field; the `StressCha
 
 **No revision to ADR-17, ADR-18, ADR-20, ADR-21, or ADR-24 is required.** ADR-18 already fully authorizes Confrontation's behavioral vocabulary (D1, D3, D4, D6, D7, D8, D9); ADR-20's `directConflict` change source is already accepted and unused, needing no widening; ADR-21/ADR-24's offer mechanism is untouched because Confrontation never uses it.
 
-The amendment is drafted alongside this design, in the same PR: `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md`, per Issue #155's own instruction ("draft ADR if triggered"). It is `Proposed`, not `Accepted` — Codex architecture review and Human acceptance remain separate, sequenced gates, exactly as ADR-24 required after `design/comfort-assist-protocol.md`'s own approval; drafting it now only front-loads the artifact for that review, it does not pre-empt the review itself.
+The amendment is Accepted alongside this design's Human approval: `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md`, Status **Accepted** (2026-07-29). Implementation remains gated on this Accepted ADR.
 
 ## 10. D9 — Save/load, replay, event-log, and inspector impact
 
@@ -216,7 +217,7 @@ git diff --check
 - `prototype/src/config/tuning.ts` — new provisional constants (§13).
 - `prototype/src/core/serialization.ts` — the new field/channel, per the drafted ADR-22 amendment.
 - `prototype/src/replay/replay.ts`, `prototype/src/inspection/inspector.ts` — no change expected (D9); listed defensively.
-- `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md` — the amendment ADR, drafted alongside this design (Status: Proposed), a separately reviewed and separately accepted artifact.
+- `ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md` — the amendment ADR (Status: Accepted 2026-07-29).
 - Corresponding colocated `*.test.ts` files for every module above.
 
 ## 17. Options Considered
@@ -263,14 +264,14 @@ git diff --check
 ## 19. Kanban Update
 
 **Card:** [Phase 3] Stage 2 Slice 8 — Confrontation and Conflict (Design)
-**Status:** Review — revision 2 after Codex design/architecture review round 1 returned Changes Required (blockers B1/B2, warnings W1–W3, all documented at PR #156). All five are closed at this revision (see Changelog above). Awaiting Codex re-review at the new head, then Human approval. No implementation until both gates pass and ADR-25 is Accepted.
-**Completed (revision 2):** Closed **B1** — `confrontationOccurred` is now fully governed by ADR-25 D2a (payload schema, load-rejection rules, persisted-site enumeration), not merely named here. Closed **B2** — removed §9's contradictory `<=`-clock rejection proposal; §9, §10, and ADR-25 now agree: an expired non-null `inConflictUntilTick` is valid, inert state, never rejected against the loaded clock. Closed **W1** — §8 now states the exact insertion point relative to `tick.ts`'s shared-basis construction and its existing interruption/suspension-resolved detection block. Closed **W2** — §6/Finding 1 now explicitly require Human acceptance of hook-only trait modulation (no Resilient/Volatile scaling, no `"volatile"` trait) in this slice. Closed **W3** — Finding 2 now states the shared-module proxy's narrowness as an explicit Human-acceptance item. Test matrix extended for the expired-timestamp and `confrontationOccurred` load-rejection cases.
+**Status:** Done — Human-approved on PR #156 (2026-07-29); ADR-25 Accepted. Implementation may begin only after ADR-25 is on `main` as Accepted (this acceptance PR) and Cursor posts Start Task on #155.
+**Completed (acceptance):** Recorded Human rulings (hook-only trait modulation; shared-module proxy narrowness). Flipped design Status to Human-approved; companion ADR-25 Accepted.
 **Completed (revision 1):** Produced `design/confrontation-conflict-protocol.md` — the exact three-conjunct condition (relationship OR-gate, shared-module co-location derived from existing task/moduleId data, combined-stress threshold) from Tier-1/fixed-snapshot facts only (D1); DQ-18.3 resolved as a fixed two-threshold structure (Fractured lower, Hostile higher) with one shared fire probability, provisional values deferred (D2); encounter-only mechanics confirmed structurally absent from the goal/candidate/offer system (D3); one attributed PRNG draw per eligible pair (D4); full negative-consequence specification (D5); `In Conflict`'s enter/exit rule (D6); phase placement fully inside the existing Phase 4 (D7/D8); an explicit ADR determination (D9); save/load/replay/event-log/inspector impact; deterministic multi-pair ordering (D10); findings, deferred tuning questions, expected file areas, test matrix, and validation commands.
 **Changed Files:**
   MODIFIED  design/confrontation-conflict-protocol.md
   MODIFIED  ai-studio/adr/0025-conflict-runtime-state-and-save-format-v8.md
 **Validation:** Grounded directly against the current implementation — re-read `tick.ts`'s exact Phase 4 structure (shared-basis construction, then the interruption/suspension-resolved block, then the decision loop) and `core/serialization.ts`'s `readTickEvent` (confirmed 19 existing `TickEvent` members, exhaustive-switch-with-default-reject discipline) to ground the W1 and B1 fixes precisely, not by assumption. Cross-checked against ADR-17, ADR-18 D1-D10, ADR-20 D5, ADR-21 D5 (for why its `resolvedAtTick` analogy does not transfer — B2's resolution), ADR-22 D1-D6, ADR-24 D3/D4 (site-3 `eventLog[].event` precedent, reused for D2a) — no accepted decision reopened; the seven-phase order and PRNG architecture are unchanged.
 **Risks:** DQ-18.3's calibration still cannot be verified against "ADR-08"'s literal text (unreachable from this repository) — unchanged from revision 1, flagged again rather than silently assumed correct. Findings 1 and 2 are now explicit Human-acceptance items (W2/W3) rather than passive flags — the Human gate must record acceptance of both narrower-scope points, not merely read past them.
-**Follow-up Tasks:** Codex re-review of this exact revision (PR #156). Resolve Findings 1-4 (§12), now including the explicit Human-acceptance requirements on Findings 1/2, at the Human gate. No other follow-ups beyond what Issue #155 already tracks; Assist wiring, Stage 2 Slice 9, and Stage 3 scaling remain untouched and out of scope.
+**Follow-up Tasks:** Cursor implements Slice 8 per this Human-approved design and Accepted ADR-25. Resolve Findings 3–4 (§12) only if they block implementation; Findings 1–2 are Human-accepted for this slice. Assist wiring, Stage 2 Slice 9, and Stage 3 scaling remain out of scope.
 
-**Not committed** per instruction — this is a design artifact only; no code in `prototype/src` is created or modified by this task.
+**Acceptance note:** Design and ADR-25 acceptance are document gates only; no code in `prototype/src` is created or modified by this acceptance change.
