@@ -1,6 +1,7 @@
 # ADR-21 - Social Offer State Storage
 
 **Status:** Accepted (architecture review + Human acceptance 2026-07-17, issue #125; revised once during review: closed `reason` vocabulary, exhaustive status-field validity matrix, decision-input boundary made internally consistent)
+**Amended by:** ADR-24 (D2, D5) — Comfort offer action and save format v7 (Accepted 2026-07-29, issue #151)
 **Date:** 2026-07-17
 **Phase:** Phase 3 - Stage 2 Slice 5 architecture gate
 **Deciders:** Project owner, Technical Architect

@@ -1,10 +1,10 @@
 # ADR-24 - Comfort Offer Action and Save Format v7
 
-**Status:** Proposed (drafted 2026-07-27 for architecture review and Human acceptance, issue #151 / PR #152)
+**Status:** Accepted (architecture review + Human acceptance 2026-07-29, issue #151; Comfort-only implementation shipped on PR #153 before this status flip — acceptance records the storage contract already governing main)
 **Date:** 2026-07-27
 **Phase:** Phase 3 - Stage 2 Slice 7 architecture gate
 **Deciders:** Project owner, Technical Architect
-**Tracks:** GitHub issue #151 (parent #119), PR #152
+**Tracks:** GitHub issue #151 (parent #119), PR #152 (design), PR #153 (implementation)
 **Amends:** **ADR-21 (Accepted) - D2 and D5 only.** ADR-21 D1, D3, D4, D6 and Invariants 1-8 continue to govern unchanged; this ADR is an amendment of two decisions, not a supersession of the record.
 **Governed by:** ADR-18 (Accepted - the Social Action Space that names Comfort and authorizes its behavioral vocabulary), ADR-20 (Accepted - the storage/serialization discipline this ADR follows), ADR-21 (Accepted - the offer store this ADR amends), ADR-22 (Accepted - the per-colonist runtime collection and the v5 precedent for a bump without migration), `design/comfort-assist-protocol.md` v0.4.0 (the behavioral design this ADR gives a storage home; D6, D12, and D13 are this ADR's exact scope), `design/social-offer-response-protocol.md` v0.2.0, `design/engineering-specification.md` v0.3.0, `ai-studio/constitution/architecture-philosophy.md`
 
@@ -35,7 +35,7 @@ The decision must preserve: ADR-21's store shape, ownership, identity, retention
 
 Because ADR-21 D1 (store ownership and shape), D3 (persisted-counter identity and processing order), D4 (bounded retention and the decision-input boundary), and D6 (replay and inspection surfaces) are entirely untouched, a full supersession would be wrong: it would retire decisions that still govern. This ADR is an **amendment of D2 and D5**.
 
-**Not performed by this draft:** flipping ADR-21's header to `Amended by ADR-24 (D2, D5)`. That is a one-line edit to an Accepted, append-only document and belongs to the acceptance gate, not to a proposal.
+**Acceptance gate action:** ADR-21's header is flipped to `Amended by ADR-24 (D2, D5)` in the same acceptance change that sets this Status to Accepted.
 
 **Numbering:** 0023 is claimed by the in-flight `origin/codex/issue-142-adr-23` (Mission Control projection and control boundary). README forbids reusing a number; skipping an in-flight one honors that rule.
 
@@ -194,19 +194,18 @@ One new member, one architecture gate, one save-version bump, with `"assist"` re
 | One-comforter-per-recipient covers in-progress and suspended Comfort executions as a continuous state-level rejection, not a repair | Matches ADR-21 D5's validate-never-repair discipline; admission and assertion must prove the same predicate because `resumeSuspended` can restore an interrupted Comfort without social re-check (`design/comfort-assist-protocol.md` v0.4.0) | Deduplicating on load; resolving with the tie-break; scoping the invariant to in-progress only (leaves the resume path open) |
 | A new ADR amending ADR-21 D2/D5, not an in-place edit and not a supersession | `adr/README.md` and `SYSTEM_MAP.md` make accepted ADRs immutable and append-only; ADR-21's in-place edits were pre-acceptance. D1/D3/D4/D6 are untouched, so supersession would retire live decisions | Editing 0021 (destroys the accepted record); full supersession (retires decisions that still govern and forces a two-document diff) |
 | Numbered 0024, skipping the in-flight 0023 | `origin/codex/issue-142-adr-23` claims 0023; README forbids reusing a number, and skipping an in-flight one honors that | Reusing 0023 (collision on merge); renumbering the other branch's work |
-| ADR-21's header left unflipped by this draft | Editing an Accepted append-only document is the acceptance gate's action, not a proposal's | Flipping it now (pre-empts a decision this ADR does not own) |
+| ADR-21's header flipped only at acceptance | Editing an Accepted append-only document is the acceptance gate's action, not a proposal's | Flipping it in the draft (pre-empts a decision this ADR does not own) |
 
 ---
 
 ## Kanban Update
 
 **Card:** [Phase 3] ADR-24 - Comfort Offer Action and Save Format v7
-**Status:** Review - drafted as `Proposed` alongside `design/comfort-assist-protocol.md` v0.4.0 on PR #152. Awaiting architecture review and Human acceptance; Slice 7 implementation is blocked until this ADR is Accepted.
-**Completed:** Drafted and revised `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` covering exactly the Data model / Save format / Serialization trigger surface of the Comfort-only Slice 7 design: the three-member `SocialOfferAction` amending ADR-21 D2 (D1); action-keyed responder eligibility with `responderNotInterruptible` generalized and no new reason code (D2); save format v7 with all four persisted validation sites enumerated and all three compatibility cases stated (D3); the amended and added rejection rules, including `"assist"` rejection and the one-comforter-per-recipient state invariant covering in-progress and suspended executions (D4, aligned with design v0.4.0); an explicit statement of everything in ADR-21 this amendment does not change (D5); five additional required invariants; six options considered; and pre-implementation validation requirements.
+**Status:** Done - architecture review + Human acceptance recorded 2026-07-29 (issue #151); Status flipped to Accepted; ADR-21 header amended.
+**Completed:** Accepted `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` as the governing storage contract for Comfort-only Slice 7 (three-member `SocialOfferAction`, action-keyed eligibility, save format v7, `"assist"` rejection, one-comforter-per-recipient including suspended). Comfort implementation already on `main` via PR #153; this gate closes the document status to match.
 **Changed Files:**
-  CREATED  ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md
-  MODIFIED ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md (D4 / Invariant 12 / validation / Decision Log for v0.4.0 resume-path alignment)
-**Validation:** Every decision traced to ADR-21 D2/D5's own closure language, ADR-18 D4.3/D8, ADR-20 D8's serialization discipline, ADR-22 D3's bump-without-migration precedent, `design/comfort-assist-protocol.md` v0.4.0 D6/D12/D13, or the Human ruling recorded on PR #152 (2026-07-27). The four persisted validation sites were confirmed by reading `prototype/src/task/socialOffers.ts`, `prototype/src/core/serialization.ts`, and `prototype/src/colonist/stress.ts` directly, not inferred. ADR file conventions checked against `ai-studio/adr/README.md`, `ai-studio/SYSTEM_MAP.md`, and the house style of ADR-21/ADR-22; the 0023 number collision confirmed against `origin/codex/issue-142-adr-23`. No accepted ADR or locked freeze decision is reopened; ADR-21 D1/D3/D4/D6 and Invariants 1-8 are explicitly preserved.
-**Follow-up Tasks:** On acceptance - flip ADR-21's header to `Amended by ADR-24 (D2, D5)` (gate action, deliberately not performed by this draft) and unblock Slice 7 Comfort implementation. Admitting `"assist"` to D1's union remains a separate future gate, blocked on the preconditions in `design/comfort-assist-protocol.md` §15.
-
-**Not committed as accepted** - acceptance is the architecture review's and the Human's decision, not this draft's. Status remains `Proposed`.
+  MODIFIED ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md (Status → Accepted; Tracks; Kanban)
+  MODIFIED ai-studio/adr/0021-social-offer-state-storage.md (header: Amended by ADR-24 (D2, D5))
+  MODIFIED design/comfort-assist-protocol.md (companion ADR status → Accepted)
+**Validation:** Acceptance records the contract already implemented and reviewed on PR #152 / #153. No runtime or union changes in this gate. Admitting `"assist"` remains a separate future architecture gate (`design/comfort-assist-protocol.md` §15).
+**Follow-up Tasks:** None for Comfort storage. Assist admission to D1's union stays blocked on §15 preconditions.
