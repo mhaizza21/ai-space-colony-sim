@@ -1,13 +1,13 @@
 # Design — Comfort and Assist Protocol (Stage 2 Slice 7)
 
-**Version:** 0.3.0 (Human ruling recorded; scope split to Comfort-only implementation)
+**Version:** 0.4.0 (review finding closed: the one-comforter invariant now covers suspended executions)
 **Phase:** Phase 3 — Stage 2 Slice 7
 **Implementation scope:** **Comfort only.** Assist is deferred by Human ruling and remains design vocabulary — see §15.
-**Status:** Draft — awaiting Codex re-review of the scope split and the ADR-24 draft, then Human approval (`docs/ai-workflow/operating-model.md` Design → Human Approval gate; `ai-studio/workflows/kanban-update-protocol.md`'s review pipeline)
-**Author:** Claude (design task)
+**Status:** Draft — awaiting re-review of the v0.4.0 resume-path fix, then Human approval (`docs/ai-workflow/operating-model.md` Design → Human Approval gate; `ai-studio/workflows/kanban-update-protocol.md`'s review pipeline)
+**Author:** Claude (design task through v0.3.0); Cursor as design author for v0.4.0 (Human Owner role reassignment on PR #152)
 **Tracks:** GitHub issue #151 (parent #119) · PR #152
 **Authority (treated as authoritative):** ADR-17 (Need System — Accepted); ADR-18 D1–D10 (Social Action Space — Accepted); ADR-20 (Relationship Record Storage — Accepted); ADR-21 (Social Offer State Storage — Accepted); ADR-22 (Per-Colonist Runtime Collection — Accepted); `design/social-offer-response-protocol.md` v0.2.0; `design/autonomous-three-colonist-runtime.md` (including its still-deferred DQ-2); `design/engineering-specification.md` v0.3.0; `ai-studio/constitution/architecture-philosophy.md`
-**Companion architecture artifact:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` (Proposed — drafted alongside this revision; §14)
+**Companion architecture artifact:** `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` (Proposed — revised with this v0.4.0 resume-path fix; §14)
 **This document is NOT implementation:** no code is written here. It specifies the data shape, deterministic rules, phase placement, and validation Cursor implements exactly.
 
 **Traceability rule:** every decision cites its authorizing source. Every mechanism reused from the current implementation is cited by file and line, verified by reading, not assumed.
@@ -24,7 +24,7 @@
 
 Ruling 1 is recorded and binding, but has **no Slice 7 implementation effect**: the action it governs is deferred by ruling 2. Its practical consequences are that no `assistAcceptanceProbability` tuning table is ever needed, that the future Assist slice inherits non-rejection as settled rather than open, and that the ADR-21 amendment's contingent item (v0.2.0 §14 item 4) drops out of ADR-24's scope entirely and travels with the Assist follow-up.
 
-### 0.2 What v0.3.0 changes
+### 0.2 What v0.3.0 changed
 
 v0.2.0 resolved Codex's three blockers for a Comfort **and** Assist slice. The ruling narrows implementation to Comfort. This revision therefore:
 
@@ -67,7 +67,24 @@ v0.2.0 resolved Codex's three blockers for a Comfort **and** Assist slice. The r
 | D12 Participation basis | Comfort + Assist | **Comfort only** |
 | D13 Save version bump | 6 → 7, four unions × 2 members | **6 → 7, four sites, one new member each** |
 
-**Decision index.** D1 §2 · D2 §3 *(deferred)* · D3 §4 · D11 §5 · D4 §6 · D5 §7 · D6 §8 · D7 §9 · D12 §10 · D8 §11 · D9 §12 · D13 §13 · D10 §14. Identifiers are stable across v0.1.0–v0.3.0 so review comments still resolve.
+**Decision index.** D1 §2 · D2 §3 *(deferred)* · D3 §4 · D11 §5 · D4 §6 · D5 §7 · D6 §8 · D7 §9 · D12 §10 · D8 §11 · D9 §12 · D13 §13 · D10 §14. Identifiers are stable across v0.1.0–v0.4.0 so review comments still resolve.
+
+### 0.5 What v0.4.0 changes — the resume path
+
+Review of v0.3.0 at head `c191eeb` found that the one-comforter-per-recipient invariant, as drafted, was **not maintainable by the guards the design specified**. The finding, and this revision's answer to it:
+
+**The finding.** v0.3.0 scoped the invariant to *in-progress* `comfort` executions and enforced it at offer resolution, reading D12's basis. But offer acceptance is not the only producer of an in-progress `comfort` execution. When a goal is suspended its execution moves to `suspendedExecution` with status `"interrupted"` (`tick.ts:450–453`, `tick.ts:470`), which removes it from D12's basis entirely — the derivation reads only `r.execution` at status `"inProgress"`. A second comforter can then be admitted toward the same recipient. When the first comforter's suspension resolves, `resumeSuspended` restores the original execution via `resumeExecution` (`tick.ts:510–513`) — or, on its other branch, begins a fresh one (`tick.ts:523–526`) — consulting only skills and the snapshot, never the offer store, the basis, or any social rule. Two in-progress `comfort` executions then name one recipient, and because `validateSimulationState` runs at every tick boundary (§13.3), the result is a thrown error mid-run rather than the decline the design intends. Two *separately suspended* Comfort goals naming one recipient are invisible to a basis-only guard for the same reason.
+
+**The answer: widen the claim, do not multiply the guards.** Scoping the invariant to in-progress executions requires a guard at every producer, and every producer added by a later slice becomes a fresh way to reintroduce this defect. Instead:
+
+- The invariant is restated over `comfort` executions in **any** status — in-progress or suspended (§5.3(a), D13.3, ADR-24 D4 / Invariant 12).
+- D12's basis gains one set, `claimedRecipients`, covering recipients named by a suspended Comfort as well as an active one (§10.2).
+- Offer resolution step 5 tests that set (§5.3(a), §8). No guard is added at any producer, because a second Comfort toward a claimed recipient can no longer be admitted in the first place.
+- `recipients` is **unchanged** — in-progress only — so a suspended Comfort grants no stress relief. This is why the claim is a separate set rather than a widening of `recipients`.
+
+**What this buys.** The admission guard and the `validateSimulationState` assertion now enforce the same predicate; in v0.3.0 the guard proved something strictly weaker than the assertion demanded, which was the root cause. The two-suspended case is closed by construction rather than by a second rule. No new enforcement site, no ordering dependence, no PRNG use, no new iteration.
+
+**The cost, accepted deliberately.** A suspended comforter reserves its recipient for the whole suspension, which can span a work period into the next free period; during that window the recipient receives no relief and other initiators' offers decline with `responderNotInterruptible`. The reservation is bounded — suspending another goal abandons the suspended pair (`tick.ts:457–465`) and releases the claim — and is preferable to a resume-time re-check, which would have to reason about same-tick ordering among several resuming colonists and would silently kill a committed goal. Recorded as a rejected option in §21 and as Finding 4 in §16.
 
 ---
 
@@ -206,13 +223,19 @@ Any other answer requires **inventing** a work-progress model: a new M12 data-mo
 
 ### 5.3 Double-application prevention — Comfort (in scope)
 
-**(a) At most one in-progress `comfort` execution may name a given colonist as its `relatedColonistId`.** Without this, two comforters could each apply D7's stress relief and Social credit to the same responder in the same tick. Enforced at three points, none of which is a live cross-runtime scan:
+**(a) At most one `comfort` execution — in-progress *or* suspended — may name a given colonist as its `relatedColonistId`.** Without this, two comforters could each apply D7's stress relief and Social credit to the same responder in the same tick.
+
+**The invariant is stated over executions in any status deliberately** (v0.4.0; §0.5). Offer acceptance is not the only producer of an in-progress `comfort` execution: `resumeSuspended` restores a suspended one via `resumeExecution` (`tick.ts:510–513`) and, on its other branch, begins a fresh execution for the resumed goal (`tick.ts:523–526`), re-resolving the task from skills and the snapshot alone — it consults no offer, no basis, and no social eligibility rule. Scoping the invariant to in-progress executions would therefore require a guard at every producer, and every producer a later slice adds becomes a fresh way to reintroduce the defect. Widening the *claim* rather than multiplying the *guards* makes the single admission check below sufficient for all of them.
+
+Enforced at two points, neither of which is a live cross-runtime scan, plus one continuous state-level assertion:
 
 - **Pending side — already exists, unchanged.** `validateSocialOfferStore` enforces at most one pending offer per `responderId` (`socialOffers.ts:242–327`), and Phase 6's ascending-id double-booking guard cancels the later of two same-responder pending offers with `responderUnavailable` (`tick.ts:935–942`). Both are action-agnostic and cover Comfort with no change.
-- **Accepted side — new.** Step 5's eligibility check declines with `responderNotInterruptible` when the responder appears in D12's participation basis as a recipient or a participant-initiator. Reading the frozen basis rather than the responder's live runtime is what keeps this order-independent.
-- **Load — new.** `validateSimulationState` rejects a state holding two in-progress `comfort` executions naming the same recipient. Rejects, never dedupes (D13.3).
+- **Admission side — new.** Step 5's eligibility check declines with `responderNotInterruptible` when the responder is claimed in D12's participation basis — `basis.claimedRecipients`, which covers suspended comforters as well as active ones — or appears in `basis.participants` as a participant-initiator (rule (b)). Reading the frozen basis rather than any live runtime is what keeps this order-independent.
+- **State-level assertion — new, and *not* a load-only check.** `validateSimulationState` rejects a state in which two `comfort` executions, in-progress or suspended in any combination, name the same recipient. Rejects, never dedupes (D13.3). That function runs at `tick()`'s input boundary (`tick.ts:550`) and at every tick exit (`tick.ts:366`), as well as at the end of `deserialize` (`serialization.ts:732`) — so it asserts the invariant continuously, not only on load. The admission guard is what keeps the assertion satisfiable: after v0.4.0 both enforce exactly the same predicate.
 
-**(b) No Comfort-on-Comfort.** A colonist who is the initiator of an in-progress `comfort` is not an eligible Comfort responder. This is reachable, not theoretical: `ambientStateFor` checks stress **before** execution (`execution.ts:187`), so a comforter whose own stress crosses the threshold reports `"stressed"` and becomes a valid Comfort target — producing mutual or chained comfort with doubled relief. Same enforcement point as (a)'s accepted side, same reason for placing it at resolution rather than perception.
+**(b) No Comfort-on-Comfort.** A colonist who is the initiator of an in-progress `comfort` is not an eligible Comfort responder. This is reachable, not theoretical: `ambientStateFor` checks stress **before** execution (`execution.ts:187`), so a comforter whose own stress crosses the threshold reports `"stressed"` and becomes a valid Comfort target — producing mutual or chained comfort with doubled relief. Same enforcement point as (a)'s admission side, same reason for placing it at resolution rather than perception.
+
+`basis.participants` stays **in-progress only** for this rule, unlike (a)'s claim set. A colonist whose own Comfort goal is merely suspended is not comforting anyone, so comforting them doubles no relief; and after their resume the two executions name different recipients, which (a)'s invariant permits.
 
 **(c) At most one relief application per responder per tick** is structural: D12's basis is a `Map` keyed by responder id, and Phase 3 performs one keyed lookup per colonist.
 
@@ -272,7 +295,7 @@ function isEligibleTargetState(action: SocialOfferAction, ambientState: AmbientS
 
 `"stressed"` is not in `INTERRUPTIBLE_AMBIENT_STATES` (`socialOffers.ts:82`) — reusing that predicate unmodified for Comfort would make it permanently ineligible (declining every offer with `responderNotInterruptible`), the opposite of ADR-18 D4.3's intent, whose entire premise is targeting the Stressed state.
 
-- Step 5 additionally declines with `responderNotInterruptible` when the responder appears in D12's basis as a recipient or participant-initiator — D11.5(a)/(b)'s enforcement point. `responderNotInterruptible` is reused rather than adding a reason code: the union's members are already action-agnostic outcome codes, and "this responder's state does not admit this action right now" is exactly what it means.
+- Step 5 additionally declines with `responderNotInterruptible` when the responder appears in D12's `claimedRecipients` or `participants` — D11.5(a)/(b)'s enforcement point (v0.4.0: `claimedRecipients`, not `recipients`, so a suspended comforter still blocks a second Comfort). `responderNotInterruptible` is reused rather than adding a reason code: the union's members are already action-agnostic outcome codes, and "this responder's state does not admit this action right now" is exactly what it means.
 
 **No other lifecycle step changes.** Expiry, both cancellation conditions, the double-booking guard, the suspension hold, the one-tick response-delay floor, ascending-`id` processing order, and bounded resolved-offer retention all apply to Comfort exactly as specified for Conversation/Shared Downtime.
 
@@ -312,12 +335,13 @@ A single immutable value built **once per tick, before Phase 3's per-colonist lo
 
 ```text
 interface ComfortParticipationBasis {
-  readonly recipients:   ReadonlyMap<ColonistId, ColonistId>;  // responder id -> comforter id
-  readonly participants: ReadonlySet<ColonistId>;              // every initiator of an in-progress comfort
+  readonly recipients:        ReadonlyMap<ColonistId, ColonistId>;  // responder id -> active comforter id
+  readonly participants:      ReadonlySet<ColonistId>;              // every initiator of an in-progress comfort
+  readonly claimedRecipients: ReadonlySet<ColonistId>;              // recipients of any held comfort (active or suspended)
 }
 ```
 
-Scoped to Comfort in Slice 7. The Assist follow-up widens it to carry `assistRecipients` and merge `participants`; the shape is chosen so that widening is additive.
+Scoped to Comfort in Slice 7. The Assist follow-up widens it to carry `assistRecipients` / `assistClaimedRecipients` and merge `participants`; the shape is chosen so that widening is additive. **`recipients` stays in-progress only** so Phase 3's relief lookup never credits a suspended Comfort; the claim set is separate precisely so admission can see what relief must not.
 
 **Fixed inputs — the complete list.** Built from `state.colonists` (the tick-start runtime collection, ADR-22 D3's canonical order) and nothing else. Per runtime `r`, exactly these fields are read:
 
@@ -326,6 +350,8 @@ Scoped to Comfort in Slice 7. The Assist follow-up widens it to carry `assistRec
 3. `r.execution?.status`
 4. `r.execution?.goalKey`
 5. `r.colonist.currentGoal?.status`, `?.relatedSocialTaskId`, `?.relatedColonistId`, `?.key`
+6. `r.suspendedExecution?.taskId`, `?.status`, `?.goalKey` *(v0.4.0 — claim derivation only)*
+7. `r.colonist.suspendedGoal?.status`, `?.relatedSocialTaskId`, `?.relatedColonistId`, `?.key` *(v0.4.0 — claim derivation only)*
 
 It reads **no** world state, **no** clock, **no** policy, **no** relationship store, **no** offer store, **no** PRNG, and **not** the mutable `runtimes` working map. It is a pure function of `readonly ColonistRuntime[]`, callable and testable in complete isolation.
 
@@ -337,7 +363,7 @@ r.execution !== null
   && r.execution.taskId === "comfort"
 ```
 
-Its *recipient* is contributed only if **all** of the following hold; otherwise the entry contributes a participant and **no** recipient:
+Its *recipient* (relief map) is contributed only if **all** of the following hold; otherwise the entry contributes a participant and **no** recipient:
 
 ```text
 r.colonist.currentGoal !== null
@@ -348,9 +374,28 @@ r.colonist.currentGoal !== null
   && r.colonist.currentGoal.relatedColonistId !== r.colonist.identity.id
 ```
 
+**Claim derivation (v0.4.0).** A recipient id is added to `claimedRecipients` when either of the following holds (fail-closed in both branches):
+
+- **Active claim** — the same conditions that contribute a `recipients` entry above.
+- **Suspended claim** — all of:
+
+```text
+r.suspendedExecution !== null
+  && r.suspendedExecution.status === "interrupted"
+  && r.suspendedExecution.taskId === "comfort"
+  && r.colonist.suspendedGoal !== null
+  && r.colonist.suspendedGoal.status === "suspended"
+  && r.colonist.suspendedGoal.relatedSocialTaskId === "comfort"
+  && r.colonist.suspendedGoal.key === r.suspendedExecution.goalKey
+  && r.colonist.suspendedGoal.relatedColonistId !== undefined
+  && r.colonist.suspendedGoal.relatedColonistId !== r.colonist.identity.id
+```
+
+A mismatched or missing suspended pair contributes **no** claim — never a guessed pairing. ADR-22's paired-slot invariant (`suspendedGoal` null iff `suspendedExecution` null) is already enforced by `validateSimulationState`; this rule still fails closed if either half is incomplete.
+
 **Fail-closed** — a mismatched or missing goal yields no relief and no guard entry, never a guessed pairing. This mirrors the accepted behavior pinned by "a companionship task without relatedColonistId fails safely with no social consequence" (`tick.test.ts:278–284`).
 
-**Tie-break.** If two comforters name the same recipient, the entry with the **lowest canonical colonist id** wins. D11.5(a) makes this unreachable at runtime and `validateSimulationState` rejects a loaded state containing it (D13.3), so the rule exists solely to keep the builder a total function with one defined answer — testable directly, never observed in a real run.
+**Tie-break.** If two active comforters name the same recipient in the `recipients` map, the entry with the **lowest canonical colonist id** wins. D11.5(a) makes this unreachable at runtime and `validateSimulationState` rejects any state containing duplicate claims (active or suspended, any combination — D13.3), so the rule exists solely to keep the `recipients` builder a total function with one defined answer — testable directly, never observed in a real run. `claimedRecipients` is a set: presence is enough; no tie-break is needed for admission.
 
 **Immutability.** Frozen at construction; nothing in Phases 3–7 writes to it, and no phase rebuilds it.
 
@@ -358,8 +403,8 @@ r.colonist.currentGoal !== null
 
 | Phase | Reader | Access | Purpose |
 |---|---|---|---|
-| 3 | Per-colonist continuous-state loop | `basis.recipients.get(id)` — keyed lookup for **this colonist only** | Supplies `evaluateStress`'s `isReceivingComfort` input (D7) |
-| 6 | Offer lifecycle step 5 | `basis.participants.has(responderId)`, `basis.recipients.has(responderId)` | D11.5(a)/(b)'s eligibility guard (D6) |
+| 3 | Per-colonist continuous-state loop | `basis.recipients.get(id)` — keyed lookup for **this colonist only** | Supplies `evaluateStress`'s `isReceivingComfort` input (D7). **Never** reads `claimedRecipients`. |
+| 6 | Offer lifecycle step 5 | `basis.participants.has(responderId)`, `basis.claimedRecipients.has(responderId)` | D11.5(a)/(b)'s eligibility guard (D6). Uses the claim set, not `recipients`. |
 
 **Explicitly forbidden inside the Phase 3 loop:** any `runtimes.get(otherId)`, any iteration over `runtimes`, and any read of another colonist's execution, goal, needs, or stress. The loop's only cross-colonist input is the frozen basis, fixed before its first iteration.
 
@@ -368,6 +413,8 @@ r.colonist.currentGoal !== null
 ### 10.4 The one-tick lag, stated rather than hidden
 
 Because the basis is tick-start, a Comfort accepted in Phase 6 of tick *T* first appears at *T+1*, so the responder's first relief tick is *T+1*'s Phase 3, not *T*'s. This is the same discipline Phase 4's completion detection already follows and documents (`tick.ts:653–657`). It is specified, tested (§19), and not to be "fixed" by rebuilding the basis mid-tick. §5.3 proves the gap it leaves is closed by the ≥1-tick response-delay floor.
+
+The same lag applies to claims: a Comfort that becomes suspended in tick *T* remains in `claimedRecipients` through *T* (tick-start still held it as active until the next rebuild), and a claim released mid-tick lingers until *T+1*. That is conservative in the safe direction — an offer may decline one tick early — and adds no ordering dependence. A claim created mid-tick by resume was already present at tick start as a suspended claim, so admission never opens a window between suspend and resume.
 
 ## 11. D8 — Phase placement, deterministic ordering, PRNG attribution
 
@@ -425,7 +472,7 @@ Deliberate even though the widenings are strictly **additive**, so a v6 document
 
 Two additions in the same posture:
 
-- `validateSimulationState` gains D11.5(a)'s invariant — at most one in-progress `comfort` execution naming a given recipient — as a **rejection**, never a deduplication, never resolved by D12's tie-break.
+- `validateSimulationState` gains D11.5(a)'s invariant — at most one `comfort` execution naming a given recipient, whether that execution is in-progress or suspended (any combination) — as a **rejection**, never a deduplication, never resolved by D12's tie-break. This is a **state-level assertion**, not a load-only check: the same function runs at every tick boundary (`tick.ts:550`, `tick.ts:366`) as well as at the end of `deserialize`. After v0.4.0 the admission guard and this assertion enforce the same predicate.
 - **`action: "assist"` and `relatedSocialTaskId: "assist"` are rejected on load in v7**, exactly as they are today, because Assist is not added to any union. This is the deferral's persistence-layer teeth.
 
 ### 13.4 Where the bump is recorded
@@ -442,13 +489,13 @@ In **ADR-24** (§14), because ADR-21 D5 owns the offer store's load rules and si
 
 **Not performed by this task, deliberately:** flipping ADR-21's header to `Amended by ADR-24 (D2, D5)` is a one-line edit to an Accepted, append-only document and is an **acceptance-time action for the architecture/Human gate**, not something a draft may do. ADR-24 states this explicitly.
 
-**ADR-24's scope** (full text in the file): the three-member `SocialOfferAction`; the action-keyed responder-eligibility rule and `responderNotInterruptible`'s generalized meaning with no new reason code; save format v7 with all four sites and the three compatibility cases; the one-comforter-per-recipient load invariant; and the explicit record that `"assist"` is **not** admitted to any persisted union by this ADR, so wiring Assist later is its own architecture gate.
+**ADR-24's scope** (full text in the file): the three-member `SocialOfferAction`; the action-keyed responder-eligibility rule and `responderNotInterruptible`'s generalized meaning with no new reason code; save format v7 with all four sites and the three compatibility cases; the one-comforter-per-recipient **state-level** invariant covering in-progress and suspended Comfort executions (v0.4.0); and the explicit record that `"assist"` is **not** admitted to any persisted union by this ADR, so wiring Assist later is its own architecture gate.
 
 **Per the Architecture Review Required table** (`ai-studio/workflows/kanban-update-protocol.md`), the triggers are **Data model** and **Serialization**. Every other decision here (D1, D3, D5's Comfort draw, D7, D8, D11's Comfort bounds, D12) instantiates already-Accepted architecture and is governed by this design document directly.
 
 **No revision of ADR-17, ADR-18, ADR-20, or ADR-22 is required.** ADR-18 fully authorizes Comfort's behavioral vocabulary (D1, D4, D5, D6, D7, D8). **No new stress-system ADR is required**: `positiveSocialProximity` is a value-level addition within M7's already-Accepted ownership of "the four reliefs" (decision-loop §7). **No ADR authorizes a work-progress model, which is why §5.2 declines to invent one and the ruling defers Assist.**
 
-**Sequencing:** this design v0.3.0 + ADR-24 draft → Codex re-review → Human design approval → ADR-24 architecture review and Human acceptance → only then does Cursor implementation begin. Implementation touching `socialOffers.ts`'s closed unions, `stress.ts`'s `evaluateStress` signature, `tasks.ts`'s `isTaskComplete`, or `serialization.ts`'s version and mirrored lists is blocked until ADR-24 is Accepted.
+**Sequencing:** this design v0.4.0 + ADR-24 draft → re-review of the resume-path fix → Human design approval → ADR-24 architecture review and Human acceptance → only then does Cursor implementation begin. Implementation touching `socialOffers.ts`'s closed unions, `stress.ts`'s `evaluateStress` signature, `tasks.ts`'s `isTaskComplete`, or `serialization.ts`'s version and mirrored lists is blocked until ADR-24 is Accepted.
 
 ---
 
@@ -495,11 +542,12 @@ Either alone makes Assist meaningful; (2) is required for it to be *reachable* a
 
 ## 16. Findings still open for the Human gate
 
-The two largest v0.2.0 findings (DQ-18.7; Assist's reachability) are **closed by the ruling**. Three tuning-adjacent items remain, none blocking:
+The two largest v0.2.0 findings (DQ-18.7; Assist's reachability) are **closed by the ruling**. The resume-path finding against v0.3.0 is **closed by v0.4.0** (§0.5). Three tuning-adjacent items remain, none blocking; Finding 4 records the accepted cost of the chosen fix:
 
 1. **Decline-friction magnitude.** Should Comfort declines reuse `declineAffinityDelta` (`tuning.ts:163`) or get their own constant? This design defaults to reuse (§9); ADR-18 D6 specifies no per-action decline magnitude, so reuse is the traceable default. A reviewer may want Support-category declines tuned separately from Companionship-category ones.
 2. **Comfort's stress relief: responder only, or a smaller relief for the initiator too?** ADR-18 D8 names the recipient's relief explicitly and is silent on the comforter's. This design grants none to the initiator (§9). Extending it generically would raise retrofitting Conversation/Shared Downtime — out of scope per Issue #151's "no existing regression."
 3. **Should a v7 build accept additive-subset v6 saves?** D13.3 Case 1 rejects them, preserving reject-only loading. Subset acceptance would be technically safe here but would set a multi-version compatibility precedent — its own ADR, not this design's call.
+4. **Suspended-comforter reservation window (accepted cost of v0.4.0).** A suspended Comfort reserves its recipient until the suspension ends or the suspended pair is abandoned (`tick.ts:457–465`). During that window the recipient receives no `positiveSocialProximity` relief and other initiators decline with `responderNotInterruptible`. This is deliberate, bounded, and preferred over a resume-time re-check (§0.5, §21). Not blocking; recorded so calibration and playtesting know the trade-off exists.
 
 ## 17. Deferred Questions (prototype tuning, not architecture)
 
@@ -520,7 +568,7 @@ Final paths are implementation freedom within this design's contract:
 - `prototype/src/decision/goals.ts` — `generateVoluntaryCandidates` extended for Comfort candidates; `GoalCandidate.relatedSocialTaskId` widened to three members (D1).
 - `prototype/src/task/socialOffers.ts` — `SocialOfferAction`/`SOCIAL_OFFER_ACTIONS` widened to three; `isEligibleTargetState` added with a `never` default (D6).
 - `prototype/src/task/tasks.ts` — `candidateTaskIdsFor`'s `voluntary` case routes `"comfort"`; `isTaskComplete` gains the `comfort` row and **keeps `assist` at `false`** (D6/§5.1).
-- `prototype/src/simulation/tick.ts` — the participation basis built pre-Phase-3 (D12); Phase 3's basis lookup feeding `evaluateStress`; Phase 5's offer-creation branch widened; Phase 6's action-keyed target-state check and participation guard; Comfort consequence application; the atrophy exclusion predicate widened (§5.1).
+- `prototype/src/simulation/tick.ts` — the participation basis built pre-Phase-3 (D12, including `claimedRecipients`); Phase 3's basis lookup feeding `evaluateStress` (reads `recipients` only); Phase 5's offer-creation branch widened; Phase 6's action-keyed target-state check and participation guard (reads `claimedRecipients` + `participants`); Comfort consequence application; the atrophy exclusion predicate widened (§5.1). `validateSimulationState` gains the strengthened one-comforter assertion.
 - `prototype/src/colonist/stress.ts` — `evaluateStress` gains the `isReceivingComfort`-style input; `StressChannelId` gains `positiveSocialProximity` (D7).
 - `prototype/src/config/tuning.ts` — new provisional constants (§17).
 - `prototype/src/core/serialization.ts` — `SAVE_FORMAT_VERSION` 6 → 7; the three mirrored closed lists widened (D13).
@@ -560,6 +608,8 @@ Every row is a regression-class addition; none removes or weakens an existing te
 - **No Comfort-on-Comfort:** an offer whose responder is the initiator of an in-progress Comfort declines with `responderNotInterruptible` — constructed with a comforter whose own stress has crossed the threshold, so the responder genuinely reads `"stressed"`.
 - A responder never receives two `positiveSocialProximity` contributions in one tick.
 - A comforting pair never receives two `mutualSupportCrisis` writes in one tick.
+- **Suspended claim blocks admission (v0.4.0):** an offer whose responder is claimed only by a *suspended* Comfort declines with `responderNotInterruptible`.
+- **End-to-end resume pin (v0.4.0):** Comfort accepted → suspended → a second initiator's offer declines → first Comfort resumes — `validateSimulationState` passes at every tick boundary throughout; never two in-progress Comforts naming one recipient.
 
 **Eligibility and relationship gate (D4/D6)**
 - Comfort declines with `relationshipGate` for a Hostile-or-Fractured pair in either direction, before any draw.
@@ -570,11 +620,14 @@ Every row is a regression-class addition; none removes or weakens an existing te
 - Every offer-backed action in Slice 7 consumes exactly one draw at step 6 (the uniform draw-count pin from §11).
 
 **Participation basis (D12)**
-- **Order independence:** permuting `state.colonists` produces an identical basis (same entry set, same tie-break outcome).
+- **Order independence:** permuting `state.colonists` produces an identical basis (same entry set, same tie-break outcome, same `claimedRecipients`).
 - **Tick-start purity:** the basis computed from `state.colonists` equals the basis computed from a deep copy taken before Phase 3.
 - **No cross-runtime read in Phase 3:** colonist X's Phase 3 stress result is bit-identical regardless of any mutation Phase 3 applies to any colonist W ≠ X — realized as a permutation test plus a directly-seeded divergence in W's tick-start stress.
-- **Fail-closed derivation:** an in-progress `comfort` execution whose `currentGoal` is absent, non-active, mismatched in `relatedSocialTaskId`, mismatched in `key`, self-referential, or missing `relatedColonistId` contributes a participant and **no** recipient — no relief, no guard entry, no throw.
-- **Tie-break totality:** a hand-constructed collection with two comforters naming one recipient yields the lowest-id comforter, and `validateSimulationState` rejects that same collection as a loaded state.
+- **Fail-closed derivation:** an in-progress `comfort` execution whose `currentGoal` is absent, non-active, mismatched in `relatedSocialTaskId`, mismatched in `key`, self-referential, or missing `relatedColonistId` contributes a participant and **no** recipient — no relief, no active claim, no throw.
+- **Suspended claim derivation (v0.4.0):** a suspended Comfort (interrupted execution + paired `suspendedGoal`) contributes a `claimedRecipient`, **no** `recipient`, and **no** `participant`.
+- **Fail-closed suspended claim:** a suspended pair whose goal mismatches in `key`, `status`, `relatedSocialTaskId`, or `relatedColonistId` contributes no claim.
+- **No relief while only claimed:** a responder whose only comforter is suspended receives no `positiveSocialProximity` contribution that tick.
+- **Tie-break totality:** a hand-constructed collection with two active comforters naming one recipient yields the lowest-id comforter in `recipients`, and `validateSimulationState` rejects that same collection as a state.
 - **One-tick lag:** a Comfort accepted in Phase 6 of tick *T* produces the responder's first `positiveSocialProximity` contribution in *T+1*, and none in *T*.
 
 **Consequences (D7)**
@@ -587,7 +640,7 @@ Every row is a regression-class addition; none removes or weakens an existing te
 - A v6 save is rejected by a v7 build with `Unsupported save format version: 6 (expected 7)` — the version gate, not a field error — and **no** partial state is constructed.
 - A v7 save round-trips a state holding a pending Comfort offer mid-delay, an accepted Comfort offer, and a declined Comfort offer, each bit-identical.
 - Load rejects an `action` outside the three-member union; a `relatedSocialTaskId` outside the widened union; a `stressEvaluated` contribution id outside the six-member list — each with a throw and no constructed state.
-- `validateSimulationState` rejects a state with two in-progress `comfort` executions naming the same recipient — rejects, does not deduplicate.
+- `validateSimulationState` rejects a state with two Comfort executions naming the same recipient in any combination of in-progress and suspended — rejects, does not deduplicate.
 - A v7 save containing `positiveSocialProximity` contributions loads cleanly.
 
 **Determinism, phase order, replay (D8/D9)**
@@ -633,6 +686,9 @@ git diff --check
 | Enforce the one-comforter guard at candidate generation | Prevents the offer being made at all | Requires exposing another colonist's task identity through `ObservableColonist`, breaching locked #21. Enforced at resolution instead |
 | Reuse `isInterruptibleAmbientState` unmodified for Comfort | No new eligibility function | Contradicts ADR-18 D4.3 — `"stressed"` is never in that list, so Comfort would decline every offer |
 | A generic relief for all Companionship/Support executions | Fuller realization of decision-loop §7 | Retunes Conversation/Shared Downtime's calibrated behavior — out of scope; Finding 2 |
+| Keep the one-comforter invariant scoped to in-progress only; add a guard at `resumeSuspended` | Closes the v0.3.0 finding at the producer that was missed | Multiplies guards: every future producer of an in-progress Comfort must remember the same check; the two-suspended case still needs a second rule; admission and `validateSimulationState` keep proving different predicates |
+| Demote the invariant to a load-only check; tolerate one-tick double relief on resume race | Cheapest text change | Gives up ADR-24 Invariant 12's "in memory" clause and ships a silent double-application window the design's own §5.3 exists to prevent |
+| Re-check at resume and abandon the Comfort goal if the recipient is already claimed | Avoids the reservation window | Same-tick ordering among several resuming colonists becomes load-bearing; silently kills a committed goal; still needs a claim set (or live scan) to know the recipient is taken |
 
 ## 22. Decision Log
 
@@ -648,30 +704,31 @@ git diff --check
 | **Assist's single-emission rule, zero completion authority, and no-chain guard retained verbatim as follow-up constraints** | They are the reviewed answer to Codex blocker 1; discarding them would force a re-litigation the review already settled | Deleting them with the deferral |
 | **Atrophy exclusion predicate widened for Comfort** | `companionshipAffinityDeltaPerTick` returns 0 for `comfort`, so the existing predicate would atrophy an actively-comforting pair — the exact defect `excludedPairs` was generalized to prevent | Leaving it (silent relationship decay during the interaction that should build it) |
 | **No-Comfort-on-Comfort guard added** | Genuinely reachable, not theoretical: a comforter whose own stress crosses the threshold reads `"stressed"` and becomes a valid Comfort target, doubling relief | Omitting it as an edge case (the stress-before-execution ordering in `ambientStateFor` makes it ordinary) |
-| **D12 basis scoped to Comfort, shaped so the Assist follow-up widens it additively** | Slice 7 needs only `recipients`/`participants`; pre-building Assist fields would be unused persisted-adjacent complexity | Keeping v0.2.0's two-map shape with an always-empty Assist map |
+| **D12 basis scoped to Comfort, with `claimedRecipients` additive to `recipients`/`participants`** | Slice 7 needs relief (`recipients`), no-Comfort-on-Comfort (`participants`), and admission claims (`claimedRecipients`); Assist follow-up widens additively | Keeping v0.2.0's two-map shape; widening `recipients` to include suspended (would grant false relief) |
 | D12 built once before Phase 3 from tick-start state only, fail-closed, lowest-id tie-break, one-tick lag | Phase 3 writes stress as it iterates, so any live cross-runtime derivation is order-dependent; the fixed basis restores the "one shared basis, fixed before the loop" discipline D3 established | v0.1.0's `runtimes` scan; building it after Phase 4; rebuilding mid-tick |
 | The one-comforter and no-chain guards live at offer resolution, not candidate generation | Another colonist's task identity is not Tier-1-observable; putting the guard in perception would breach locked #21 | Widening `ObservableColonist` with task identity |
 | Two-sided non-hostile relationship gate, reused unmodified | Codebase consistency; the two-sided check is the established fix for a confirmed defect in the one-sided reading | A literal ADR-18 D4.4 one-sided gate for Comfort alone |
 | **Save v7 retained despite the narrowed scope** | Three of four persisted sites still widen and site 4 follows from the new relief channel; the version integer is the only compatibility signal under reject-only loading | Skipping the bump (misleading corrupt-save error when an old build meets a new save) |
 | v6 saves rejected outright by v7 builds despite the widenings being additive | Preserves reject-only loading as the single accepted posture; subset acceptance would set a multi-version-compatibility precedent nothing maintains | Silently accepting v6 — raised as Finding 3 instead |
-| Validate-never-repair reinforced; `"assist"` values rejected on load; the one-comforter invariant is a load rejection | Matches `socialOffers.ts`'s stated discipline verbatim, and gives the deferral persistence-layer teeth | Coercing unknown members to a default; dropping them; deduplicating a two-comforter save |
+| Validate-never-repair reinforced; `"assist"` values rejected on load; the one-comforter invariant is a continuous state-level assertion covering in-progress and suspended executions | Matches `socialOffers.ts`'s stated discipline, gives the deferral persistence-layer teeth, and keeps admission and `validateSimulationState` on the same predicate (v0.4.0) | Coercing unknown members to a default; dropping them; deduplicating a two-comforter save; scoping the invariant to in-progress only |
 | **The ADR-21 revision is realized as a new ADR-24 amending D2/D5, not an in-place edit** | `adr/README.md` and `SYSTEM_MAP.md` both state ADRs are immutable/append-only once accepted; ADR-21's in-place edits were pre-acceptance | Editing 0021 in place; a full supersession (ADR-21 D1/D3/D4/D6 are untouched and still govern) |
 | **ADR-24 numbered 0024, skipping the in-flight 0023** | `origin/codex/issue-142-adr-23` claims 0023; README forbids number reuse | Reusing 0023; renumbering the other branch's work |
 | **Flipping ADR-21's status header is left to the acceptance gate** | Editing an Accepted append-only document is not a draft's prerogative | Doing it now (pre-empts a decision the gate owns) |
 | `responderNotInterruptible` reused with a generalized meaning covering both the action-keyed state table and the participation guard | The union's members are outcome-shaped, not action-specific; a per-action code would fragment a deliberately closed union | `comfortTargetNotStressed` / `responderAlreadyComforted` (unnecessary fragmentation) |
+| **Widen the one-comforter claim to cover suspended executions; add `claimedRecipients` to D12; leave `recipients` in-progress-only** *(v0.4.0)* | Offer acceptance is not the only producer of an in-progress Comfort (`resumeSuspended` at `tick.ts:510–526`); scoping the invariant to in-progress forces a guard per producer. Widening the claim makes the single admission check sufficient, aligns it with `validateSimulationState`, and closes the two-suspended case by construction | Guard at resume only; demote the invariant to load-only; re-check at resume and abandon (all §21) |
 
 ---
 
 ## 23. Kanban Update
 
 **Card:** [Phase 3] Stage 2 Slice 7 — Comfort and Assist (Design)
-**Status:** Review — v0.3.0 pushed to PR #152 with the Human ruling recorded and scope split to Comfort-only, plus the ADR-24 draft. Awaiting Codex re-review and Human design approval; ADR-24 then goes through its own architecture review and Human acceptance before any implementation.
-**Completed (this revision):** Recorded the Human ruling (§0.1) and split scope explicitly (§0.3/§0.4) rather than dropping Assist silently. Narrowed all three action/social-task unions to add `"comfort"` only, keeping `"assist"` out of every runtime and persisted union per ruling 2. Recast D11 so Comfort's bounded execution, exclusive completion ownership, and four double-application rules are the in-scope content (§5.1/§5.3), while Assist's zero-work-effect analysis and single-emission rules are retained verbatim as deferral rationale and binding follow-up constraints (§5.2). Scoped D12's participation basis to Comfort with an additive shape for later widening. Recorded DQ-18.7 as ruled Option A with its (nil) Slice 7 effect stated precisely (§7.2). Kept the save v7 bump with the four sites re-tallied at one new member each (§13). Added eight deferral-pin tests so ruling 2 is enforced by the suite (§19). Drafted `ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md` (Proposed) as the Comfort-only amendment of ADR-21 D2/D5, with the file-mechanics reasoning recorded (§14). Prepared the Assist follow-up issue proposal — title, scope, dependencies, acceptance criteria — without filing it (§15). Test matrix, Options Considered, and Decision Log updated throughout.
+**Status:** Review — v0.4.0 pushed to PR #152 closing the resume-path finding against v0.3.0 (`claimedRecipients` + strengthened state-level invariant). Awaiting re-review and Human design approval; ADR-24 then goes through its own architecture review and Human acceptance before any implementation.
+**Completed (this revision):** Closed the PR #152 review finding that a suspended Comfort dropped out of D12's basis and `resumeSuspended` could restore a second in-progress Comfort naming the same recipient (§0.5). Restated D11.5(a) over Comfort executions in any status; added `claimedRecipients` to D12 with fail-closed suspended derivation and separate relief map (§10.2–§10.4); switched step 5 to read the claim set (§8); corrected the "load rejection" mislabel to a continuous state-level assertion (§5.3, §13.3); recorded Finding 4 as the accepted reservation cost (§16); extended §19 with suspended-claim, fail-closed, no-relief-while-claimed, and end-to-end resume pins; rejected resume-guard / demotion / resume-abandon options in §21; updated ADR-24 D4 / Invariant 12 / validation / Decision Log in lockstep.
 **Changed Files:**
-  MODIFIED  design/comfort-assist-protocol.md (v0.2.0 → v0.3.0)
-  CREATED   ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md (Proposed)
-**Validation:** All claims re-grounded by reading the current implementation with file:line citations — `prototype/src/task/execution.ts`, `task/tasks.ts`, `task/socialOffers.ts`, `simulation/tick.ts`, `world/snapshot.ts`, `colonist/stress.ts`, `colonist/relationships.ts`, `decision/goals.ts`, `core/serialization.ts`, `config/tuning.ts`. ADR conventions verified against `ai-studio/adr/README.md`, `ai-studio/SYSTEM_MAP.md`, and the house style of ADR-21/ADR-22; the 0023 collision confirmed against `origin/codex/issue-142-adr-23`. Document/workflow validation run: `node tools/ai-workflow/validate-workflow-pack.mjs .`, `node --test tools/ai-workflow/validate-workflow-pack.test.mjs`, `git diff --check`. No production code touched; no GitHub issue created.
-**Risks:** The scope split touches every section, so the main review risk is an Assist reference surviving somewhere it now shouldn't — §19's deferral pins are the mitigation, and they should be checked against the final text. ADR-24's status as an *amendment* rather than a supersession is a judgment call about ADR-21's untouched decisions and deserves explicit gate confirmation, as does leaving ADR-21's header unflipped. D12's one-tick lag remains a deliberate, specified behavior a reviewer should confirm is acceptable.
-**Follow-up Tasks:** Human ruling on Findings 1–3 (all tuning-adjacent, none blocking). ADR-24 through architecture review and Human acceptance before implementation. File the Assist follow-up issue from §15 when the Human is ready. Confrontation, `In Conflict`, Stage 2 Slice 8/9, and Stage 3 scaling remain out of scope.
+  MODIFIED  design/comfort-assist-protocol.md (v0.3.0 → v0.4.0)
+  MODIFIED  ai-studio/adr/0024-comfort-offer-action-and-save-format-v7.md (Proposed — invariant widened)
+**Validation:** Resume-path claim grounded against `tick.ts:450–526`, `tick.ts:550`, `tick.ts:366`, `serialization.ts:732`. Document/workflow validation run: `node tools/ai-workflow/validate-workflow-pack.mjs .`, `node --test tools/ai-workflow/validate-workflow-pack.test.mjs`, `git diff --check`. No production code touched.
+**Risks:** Reviewers should confirm that the suspended reservation window (Finding 4) is acceptable playtest behavior, and that `participants` remaining in-progress-only for rule (b) is intentional. D12's one-tick claim lag remains deliberate (§10.4).
+**Follow-up Tasks:** Human ruling on Findings 1–3 (tuning-adjacent) and acknowledgement of Finding 4. ADR-24 through architecture review and Human acceptance before implementation. File the Assist follow-up issue from §15 when the Human is ready.
 
 **Not committed as implementation** — design and architecture artifacts only; no code in `prototype/src` is created or modified by this task.
