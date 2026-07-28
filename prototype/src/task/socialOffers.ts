@@ -14,9 +14,9 @@
 import type { AmbientState } from "../config/constants.js";
 import { assertSafeColonistId, type ColonistId } from "../colonist/relationships.js";
 
-/** The two offer-backed social actions in this slice (Issue #120 scope; ADR-21 D2's closed union). */
-export type SocialOfferAction = "conversation" | "sharedDowntime";
-export const SOCIAL_OFFER_ACTIONS: readonly SocialOfferAction[] = ["conversation", "sharedDowntime"];
+/** The closed offer-backed social actions (ADR-21 D2 as amended by ADR-24 D1 — Comfort-only Slice 7). */
+export type SocialOfferAction = "conversation" | "sharedDowntime" | "comfort";
+export const SOCIAL_OFFER_ACTIONS: readonly SocialOfferAction[] = ["conversation", "sharedDowntime", "comfort"];
 
 /** The closed five-status machine (ADR-21 D2). "pending" is the only non-terminal status. */
 export type SocialOfferStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
@@ -83,6 +83,25 @@ export const INTERRUPTIBLE_AMBIENT_STATES: readonly AmbientState[] = ["resting",
 
 export function isInterruptibleAmbientState(state: string): boolean {
   return (INTERRUPTIBLE_AMBIENT_STATES as readonly string[]).includes(state);
+}
+
+/**
+ * Action-keyed responder ambient-state eligibility (design D6 / ADR-24 D2).
+ * Conversation/Shared Downtime keep the interruptible-ambient table; Comfort targets
+ * `"stressed"` only — which is deliberately outside INTERRUPTIBLE_AMBIENT_STATES.
+ */
+export function isEligibleTargetState(action: SocialOfferAction, ambientState: string): boolean {
+  switch (action) {
+    case "conversation":
+    case "sharedDowntime":
+      return isInterruptibleAmbientState(ambientState);
+    case "comfort":
+      return ambientState === "stressed";
+    default: {
+      const unhandled: never = action;
+      throw new Error(`unhandled social offer action: ${String(unhandled)}`);
+    }
+  }
 }
 
 /**

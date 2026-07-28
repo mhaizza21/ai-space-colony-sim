@@ -204,8 +204,15 @@ describe("ADR-18 social task vocabulary (Build Step 1 — data only, not yet wir
   it("reachable companionship tasks complete when free time ends", () => {
     expect(isTaskComplete("conversation", () => false, freeSnapshot)).toBe(false);
     expect(isTaskComplete("sharedDowntime", () => false, freeSnapshot)).toBe(false);
+    expect(isTaskComplete("comfort", () => false, freeSnapshot)).toBe(false);
     expect(isTaskComplete("conversation", () => false, workSnapshot)).toBe(true);
     expect(isTaskComplete("sharedDowntime", () => false, workSnapshot)).toBe(true);
+    expect(isTaskComplete("comfort", () => false, workSnapshot)).toBe(true);
+  });
+
+  it("assist remains unreachable vocabulary — isTaskComplete stays false for every period", () => {
+    expect(isTaskComplete("assist", () => false, freeSnapshot)).toBe(false);
+    expect(isTaskComplete("assist", () => false, workSnapshot)).toBe(false);
   });
 });
 

@@ -41,7 +41,7 @@ import type { DecisionLog, DecisionRecord, EventLog, EventRecord } from "../reco
 import { validateSimulationState, type ColonistRuntime, type SimulationState, type TickEvent } from "../simulation/tick.js";
 
 /** The current save format version — bump on any incompatible SimulationState shape change. */
-export const SAVE_FORMAT_VERSION = 6; // v6: Stage 2 Slice 6b — activeColonistId (6a's transitional selector) is retired; every colonists[] entry is now fully simulated.
+export const SAVE_FORMAT_VERSION = 7; // v7: Stage 2 Slice 7 — Comfort widens the persisted action, social-task, and stress-channel unions (design/comfort-assist-protocol.md D13; ADR-24).
 
 const GOAL_STATUSES: readonly GoalStatus[] = ["active", "suspended", "blocked", "completed", "abandoned"];
 const EXECUTION_STATUSES: readonly ExecutionStatus[] = ["inProgress", "interrupted", "completed", "aborted"];
@@ -69,6 +69,7 @@ const STRESS_CHANNEL_IDS: readonly StressChannelId[] = [
   "overwork",
   "restAdequacy",
   "needsSatisfied",
+  "positiveSocialProximity",
 ];
 const MEMORY_FORMED_TYPES = ["deprivation", "condition", "relational"] as const;
 
@@ -245,7 +246,7 @@ function readGoal(raw: unknown, field: string): Goal {
     relatedSocialTaskId:
       o.relatedSocialTaskId === undefined
         ? undefined
-        : expectOneOf(o.relatedSocialTaskId, ["conversation", "sharedDowntime"] as const, `${field}.relatedSocialTaskId`),
+        : expectOneOf(o.relatedSocialTaskId, ["conversation", "sharedDowntime", "comfort"] as const, `${field}.relatedSocialTaskId`),
     status: expectOneOf(o.status, GOAL_STATUSES, `${field}.status`),
     motivation: expectString(o.motivation, `${field}.motivation`),
     adoptedAtTick: expectNonNegativeInteger(o.adoptedAtTick, `${field}.adoptedAtTick`),
@@ -584,7 +585,7 @@ function readTickEvent(raw: unknown, field: string): TickEvent {
         offerId: expectNonNegativeInteger(o.offerId, `${field}.offerId`),
         initiatorId: expectString(o.initiatorId, `${field}.initiatorId`),
         responderId: expectString(o.responderId, `${field}.responderId`),
-        action: expectOneOf(o.action, ["conversation", "sharedDowntime"] as const, `${field}.action`),
+        action: expectOneOf(o.action, ["conversation", "sharedDowntime", "comfort"] as const, `${field}.action`),
         respondableAtTick: expectNonNegativeInteger(o.respondableAtTick, `${field}.respondableAtTick`),
         expiresAtTick: expectNonNegativeInteger(o.expiresAtTick, `${field}.expiresAtTick`),
       };

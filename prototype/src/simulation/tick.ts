@@ -72,7 +72,7 @@ import { isTaskComplete, resolveTask, type TaskId, type TaskResolution } from ".
 import {
   createPendingOffer,
   evictResolvedOffers,
-  isInterruptibleAmbientState,
+  isEligibleTargetState,
   offerGoalKey,
   resolveOffer,
   type OfferResolutionReason,
@@ -82,6 +82,7 @@ import {
 } from "../task/socialOffers.js";
 import { SOCIAL_OFFER_TUNING } from "../config/tuning.js";
 import { next } from "../core/prng.js";
+import { buildComfortParticipationBasis, collectComfortClaims } from "./comfortParticipation.js";
 import {
   abortExecution,
   ambientStateFor,
@@ -256,6 +257,17 @@ export function validateSimulationState(state: SimulationState): void {
   for (const runtime of state.colonists) {
     validateColonistRuntime(runtime, knownIds, state.socialOffers);
   }
+
+  // ADR-24 Invariant 12 / design D11.5(a): at most one Comfort claim (active or suspended)
+  // per recipient — continuous state-level assertion, not load-only.
+  for (const [recipientId, comforters] of collectComfortClaims(state.colonists)) {
+    if (comforters.length > 1) {
+      throw new Error(
+        `Invalid SimulationState: more than one comfort execution names recipient "${recipientId}" ` +
+          `(comforters: ${comforters.join(", ")}) — ADR-24 Invariant 12.`,
+      );
+    }
+  }
 }
 
 /** Per-container invariants (ADR-22 Invariant 3) — the exact rules that governed the singular slots, applied per entry. */
@@ -383,6 +395,8 @@ function socialNeedRestorePerTick(taskId: TaskId): number {
       return TASK_TUNING.conversationSocialRestorePerTick;
     case "sharedDowntime":
       return TASK_TUNING.sharedDowntimeSocialRestorePerTick;
+    case "comfort":
+      return TASK_TUNING.comfortSocialRestorePerTick;
     default:
       return 0;
   }
@@ -577,6 +591,10 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
   const triggered = new Map<string, boolean>(ids.map((id) => [id, shiftBoundaryFired]));
   const setTriggered = (id: string): void => void triggered.set(id, true);
 
+  // Design D12: immutable Comfort participation basis — built once from tick-start state
+  // before Phase 3; never rebuilt. Relief reads `recipients`; admission reads `claimedRecipients`.
+  const comfortBasis = buildComfortParticipationBasis(state.colonists);
+
   // --- Phase: colonist continuous state (needs, stress) — per colonist, canonical order ---
   for (const id of ids) {
     const rt = runtimes.get(id)!;
@@ -589,7 +607,8 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
 
     const stressBefore = rt.colonist.stress;
     const isWorking = rt.execution !== null && rt.execution.status === "inProgress" && rt.execution.taskId === "workAtWorkstation";
-    const stressResult = evaluateStress(stressBefore, decayedNeeds, deltaTicks, traits, isWorking);
+    const isReceivingComfort = comfortBasis.recipients.has(id);
+    const stressResult = evaluateStress(stressBefore, decayedNeeds, deltaTicks, traits, isWorking, isReceivingComfort);
     const colonist = withStress(withNeeds(rt.colonist, decayedNeeds), stressResult.state);
     // Retained, not discarded (Copilot-confirmed defect): decision-loop.md:192's hard
     // traceability requirement is "every stress movement must be decomposable into its sources
@@ -618,7 +637,9 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
     const activeSocialPartner = rt.execution?.status === "inProgress" ? (rt.colonist.currentGoal?.relatedColonistId ?? activeSharedMealPartner) : undefined;
     if (
       activeSocialPartner !== undefined &&
-      (companionshipAffinityDeltaPerTick(rt.execution!.taskId) > 0 || rt.execution!.taskId === "eatAtFoodStation")
+      (companionshipAffinityDeltaPerTick(rt.execution!.taskId) > 0 ||
+        rt.execution!.taskId === "eatAtFoodStation" ||
+        rt.execution!.taskId === "comfort")
     ) {
       excludedPairs.push(canonicalPairId(id, activeSocialPartner));
     }
@@ -806,9 +827,11 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
       if (
         decision.kind === "commit" &&
         decision.goal.relatedColonistId !== undefined &&
-        (decision.goal.relatedSocialTaskId === "conversation" || decision.goal.relatedSocialTaskId === "sharedDowntime")
+        (decision.goal.relatedSocialTaskId === "conversation" ||
+          decision.goal.relatedSocialTaskId === "sharedDowntime" ||
+          decision.goal.relatedSocialTaskId === "comfort")
       ) {
-        // Stage 2 Slice 5 (design D3, Phase 5): committing a Conversation/Shared Downtime goal
+        // Stage 2 Slice 5/7 (design D3/D6, Phase 5): committing an offer-backed social goal
         // creates a pending offer instead of beginning execution — the responder answers in a
         // later tick's lifecycle pass (never this tick: the one-tick response-delay floor).
         // Re-committing an identical intent while its offer is still pending reuses that offer.
@@ -960,7 +983,17 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
       continue;
     }
     const observed = sharedObservations.find((o) => o.id === offer.responderId);
-    if (observed === undefined || !isInterruptibleAmbientState(observed.ambientState)) {
+    if (observed === undefined || !isEligibleTargetState(offer.action, observed.ambientState)) {
+      declineWithFriction("responderNotInterruptible");
+      writeBack();
+      continue;
+    }
+    // Design D11.5(a)/(b): claimed recipients (active or suspended Comfort) and in-progress
+    // Comfort initiators are not eligible Comfort responders / targets.
+    if (
+      offer.action === "comfort" &&
+      (comfortBasis.claimedRecipients.has(offer.responderId) || comfortBasis.participants.has(offer.responderId))
+    ) {
       declineWithFriction("responderNotInterruptible");
       writeBack();
       continue;
@@ -975,9 +1008,13 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
       continue;
     }
     // 6 — acceptance draw (design D5): one attributed S1 draw, modulated by the RESPONDER's
-    // directional relationship state toward the initiator.
+    // directional relationship state toward the initiator. Comfort uses its own probability table.
     const responderState = perspective(relationships, offer.responderId, offer.initiatorId).state;
-    const acceptanceProbability = SOCIAL_OFFER_TUNING.acceptanceProbability[responderState] ?? 0;
+    const acceptanceTable =
+      offer.action === "comfort"
+        ? SOCIAL_OFFER_TUNING.comfortAcceptanceProbability
+        : SOCIAL_OFFER_TUNING.acceptanceProbability;
+    const acceptanceProbability = acceptanceTable[responderState] ?? 0;
     const draw = next(prng);
     prng = draw.state;
     if (draw.value >= acceptanceProbability) {
@@ -1058,25 +1095,54 @@ export function tick(state: SimulationState, deltaTicks: number): TickResult {
     }
 
     const relatedColonistId = colonist.currentGoal?.relatedColonistId;
-    const socialRestorePerTick = socialNeedRestorePerTick(progressed.taskId);
-    const affinityDeltaPerTick = companionshipAffinityDeltaPerTick(progressed.taskId);
-    if (relatedColonistId !== undefined && (socialRestorePerTick > 0 || affinityDeltaPerTick > 0)) {
-      if (socialRestorePerTick > 0) {
-        colonist = withNeeds(colonist, restoreNeedByAmount(colonist.needs, "social", socialRestorePerTick * deltaTicks, traits));
-      }
-      if (affinityDeltaPerTick > 0) {
-        const interaction = applyInteraction(relationships, {
-          colonistAId: colonist.identity.id,
-          colonistBId: relatedColonistId,
-          tick: clock.tick,
-          changeSource: "sharedTaskCompletion",
-          initiatorId: colonist.identity.id,
-          responderId: relatedColonistId,
-          aTowardBDelta: affinityDeltaPerTick * deltaTicks,
-          bTowardADelta: 0,
+    if (progressed.taskId === "comfort" && relatedColonistId !== undefined) {
+      const comfortRestore = TASK_TUNING.comfortSocialRestorePerTick * deltaTicks;
+      const comfortAffinity = TASK_TUNING.comfortAffinityDeltaPerTick * deltaTicks;
+      colonist = withNeeds(colonist, restoreNeedByAmount(colonist.needs, "social", comfortRestore, traits));
+      const responderRt = runtimes.get(relatedColonistId);
+      if (responderRt !== undefined) {
+        const responderTraits = responderRt.colonist.identity.baseTraits;
+        runtimes.set(relatedColonistId, {
+          ...responderRt,
+          colonist: withNeeds(
+            responderRt.colonist,
+            restoreNeedByAmount(responderRt.colonist.needs, "social", comfortRestore, responderTraits),
+          ),
         });
-        relationships = interaction.store;
-        relationshipConsequences.push(...interaction.consequences);
+      }
+      const interaction = applyInteraction(relationships, {
+        colonistAId: colonist.identity.id,
+        colonistBId: relatedColonistId,
+        tick: clock.tick,
+        changeSource: "mutualSupportCrisis",
+        initiatorId: colonist.identity.id,
+        responderId: relatedColonistId,
+        aTowardBDelta: comfortAffinity,
+        bTowardADelta: comfortAffinity,
+      });
+      relationships = interaction.store;
+      relationshipConsequences.push(...interaction.consequences);
+    } else {
+      const socialRestorePerTick = socialNeedRestorePerTick(progressed.taskId);
+      const affinityDeltaPerTick = companionshipAffinityDeltaPerTick(progressed.taskId);
+      if (relatedColonistId !== undefined && (socialRestorePerTick > 0 || affinityDeltaPerTick > 0)) {
+        if (socialRestorePerTick > 0) {
+          colonist = withNeeds(colonist, restoreNeedByAmount(colonist.needs, "social", socialRestorePerTick * deltaTicks, traits));
+        }
+        if (affinityDeltaPerTick > 0) {
+          const interaction = applyInteraction(relationships, {
+            colonistAId: colonist.identity.id,
+            colonistBId: relatedColonistId,
+            tick: clock.tick,
+            changeSource: "sharedTaskCompletion",
+            initiatorId: colonist.identity.id,
+            responderId: relatedColonistId,
+            aTowardBDelta: affinityDeltaPerTick * deltaTicks,
+            bTowardADelta: 0,
+          });
+          relationships = interaction.store;
+          relationshipConsequences.push(...interaction.consequences);
+        }
       }
     }
 

@@ -35,7 +35,7 @@ export interface GoalCandidate {
   readonly baseUrgency: number;
   readonly relatedNeed?: NeedId;
   readonly relatedColonistId?: string;
-  readonly relatedSocialTaskId?: "conversation" | "sharedDowntime";
+  readonly relatedSocialTaskId?: "conversation" | "sharedDowntime" | "comfort";
 }
 
 /**
@@ -125,16 +125,28 @@ function generateVoluntaryCandidates(snapshot: WorldSnapshot): readonly GoalCand
     key: "voluntary:idle",
     baseUrgency: WEIGHT_TUNING.voluntaryBaseWeight,
   };
-  const social: GoalCandidate[] = snapshot.nearbyColonists.flatMap((other) =>
-    (["conversation", "sharedDowntime"] as const).map((taskId) => ({
+  const social: GoalCandidate[] = snapshot.nearbyColonists.flatMap((other) => {
+    const companionship: GoalCandidate[] = (["conversation", "sharedDowntime"] as const).map((taskId) => ({
       source: "voluntary" as const,
       tier: GOAL_SOURCE_TIER.voluntary,
       key: `voluntary:social:${taskId}:${other.id}`,
       baseUrgency: WEIGHT_TUNING.voluntaryBaseWeight,
       relatedColonistId: other.id,
       relatedSocialTaskId: taskId,
-    })),
-  );
+    }));
+    if (other.ambientState !== "stressed") return companionship;
+    return [
+      ...companionship,
+      {
+        source: "voluntary" as const,
+        tier: GOAL_SOURCE_TIER.voluntary,
+        key: `voluntary:social:comfort:${other.id}`,
+        baseUrgency: WEIGHT_TUNING.voluntaryBaseWeight,
+        relatedColonistId: other.id,
+        relatedSocialTaskId: "comfort" as const,
+      },
+    ];
+  });
   return [idle, ...social];
 }
 
@@ -173,7 +185,7 @@ export interface Goal {
   readonly relatedNeed?: NeedId;
   /** Carried from social voluntary candidates so later task/action layers never parse `key`. */
   readonly relatedColonistId?: string;
-  readonly relatedSocialTaskId?: "conversation" | "sharedDowntime";
+  readonly relatedSocialTaskId?: "conversation" | "sharedDowntime" | "comfort";
   readonly status: GoalStatus;
   readonly motivation: string;
   readonly adoptedAtTick: number;
