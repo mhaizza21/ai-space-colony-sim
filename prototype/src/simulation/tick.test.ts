@@ -11,7 +11,7 @@ import { createPrng } from "../core/prng.js";
 import { deserialize, serialize } from "../core/serialization.js";
 import { createDefaultPolicy } from "../world/policy.js";
 import { createWorld, setModuleFunctional } from "../world/world.js";
-import { SOCIAL_OFFER_TUNING, TASK_TUNING } from "../config/tuning.js";
+import { CONFLICT_TUNING, SOCIAL_OFFER_TUNING, TASK_TUNING } from "../config/tuning.js";
 import { createColonist, withCurrentGoal, withNeeds, withSuspendedGoal } from "../colonist/colonist.js";
 import type { TraitId } from "../colonist/traits.js";
 import { createNeeds } from "../colonist/needs.js";
@@ -1550,5 +1550,153 @@ describe("social protocol at full multi-colonist scale (Stage 2 Slice 6c, Issue 
       ["yara", "conversation", "cancelled", "responderUnavailable"],
     ]);
     expect(() => validateSimulationState(result.state)).not.toThrow();
+  });
+});
+
+describe("Stage 2 Slice 8 — Confrontation / In Conflict (design §14)", () => {
+  function workstationPairState(seed = 1): SimulationState {
+    const workStart = 0;
+    const base = withOthers(stateAtTickOfDay(workStart, {}, seed), [zeke]);
+    const workGoal = (ownerId: string) =>
+      commitGoal(
+        { source: "shiftAssignment", tier: 3, key: `shiftAssignment:work:${ownerId}`, baseUrgency: 0.5 },
+        "work",
+        0,
+      );
+    const withExec = (rt: ColonistRuntime, id: string): ColonistRuntime => {
+      const goal = workGoal(id);
+      return {
+        ...rt,
+        colonist: withCurrentGoal(
+          withNeeds(rt.colonist, {
+            ...rt.colonist.needs,
+            // High stress so hostile pairs clear the combined-stress bar after Phase 3.
+          } as ReturnType<typeof createNeeds>),
+          goal,
+        ),
+        execution: beginExecution(taskDefinition("workAtWorkstation"), goal, base.clock.tick),
+      };
+    };
+    const colonists = base.colonists.map((rt) => withExec(rt, rt.colonist.identity.id));
+    // Force high stress after create — Phase 3 will move it slightly but we set near threshold.
+    const stressed = colonists.map((rt) => ({
+      ...rt,
+      colonist: {
+        ...rt.colonist,
+        stress: { level: 0.7 },
+      },
+    }));
+    const relationships = applyInteraction(createRelationshipStore(), {
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      tick: 0,
+      changeSource: "directConflict",
+      initiatorId: null,
+      responderId: null,
+      aTowardBDelta: -50,
+      bTowardADelta: -50,
+    }).store;
+    return { ...base, colonists: stressed, relationships, hasBootstrapped: true };
+  }
+
+  it("fires Confrontation with relationship/stress/inConflict consequences and no goal/execution change", () => {
+    // fireProbability forced via patching state is hard; use seed hunt or force via detect path.
+    // Force fire by using conflictFireProbability=1 equivalent: run many seeds until one fires,
+    // or temporarily rely on detectConfrontations with probability 1 by constructing a state
+    // where we tick with a known-good seed. Probe a few seeds.
+    let fired: ReturnType<typeof tick> | null = null;
+    for (let seed = 1; seed <= 200 && fired === null; seed++) {
+      const initial = workstationPairState(seed);
+      const before = {
+        goals: initial.colonists.map((r) => r.colonist.currentGoal),
+        executions: initial.colonists.map((r) => r.execution),
+        social: initial.colonists.map((r) => r.colonist.needs.social.level),
+        purpose: initial.colonists.map((r) => r.colonist.needs.purpose.level),
+        offers: initial.socialOffers.offers.length,
+      };
+      const result = tick(initial, 1);
+      if (result.events.some((e) => e.kind === "confrontationOccurred")) {
+        fired = result;
+        const event = result.events.find((e) => e.kind === "confrontationOccurred");
+        expect(event).toMatchObject({
+          kind: "confrontationOccurred",
+          colonistAId: "c1",
+          colonistBId: "zeke",
+          sharedModuleId: "workstation",
+          severity: "hostile",
+        });
+        expect(perspective(result.state.relationships, "c1", "zeke").affinity).toBeLessThan(
+          perspective(initial.relationships, "c1", "zeke").affinity,
+        );
+        expect(perspective(result.state.relationships, "zeke", "c1").affinity).toBeLessThan(
+          perspective(initial.relationships, "zeke", "c1").affinity,
+        );
+        for (const rt of result.state.colonists) {
+          expect(rt.inConflictUntilTick).toBe(result.state.clock.tick + CONFLICT_TUNING.inConflictDisplayTicks);
+          expect(rt.colonist.stress.level).toBeGreaterThan(0.7);
+        }
+        const spikes = result.events.filter(
+          (e) =>
+            e.kind === "stressEvaluated" &&
+            e.contributions.some((c) => c.id === "hostileProximityConflict" && c.rawDelta > 0),
+        );
+        expect(spikes.length).toBeGreaterThanOrEqual(2);
+        // Confrontation credits no Social / Purpose (Phase 3 decay may still move levels).
+        for (let i = 0; i < result.state.colonists.length; i++) {
+          expect(result.state.colonists[i]!.colonist.needs.social.level).toBeLessThanOrEqual(before.social[i]!);
+          expect(result.state.colonists[i]!.colonist.needs.purpose.level).toBeLessThanOrEqual(before.purpose[i]!);
+        }
+        expect(result.state.socialOffers.offers.length).toBe(before.offers);
+        expect(result.state.colonists.map((r) => r.colonist.currentGoal)).toEqual(before.goals);
+        // Confrontation does not create/abort/suspend executions — Phase 6 may still progress them.
+        expect(result.state.colonists.map((r) => r.execution?.taskId)).toEqual(before.executions.map((e) => e?.taskId));
+        expect(result.state.colonists.map((r) => r.execution?.goalKey)).toEqual(before.executions.map((e) => e?.goalKey));
+        expect(result.state.colonists.map((r) => r.execution?.status)).toEqual(before.executions.map((e) => e?.status));
+      }
+    }
+    expect(fired).not.toBeNull();
+  });
+
+  it("moduleId null colonists are never Confrontation participants", () => {
+    const freeStart = policy.workTicks + policy.restTicks;
+    const base = withOthers(stateAtTickOfDay(freeStart, {}, 1), [zeke]);
+    const idle = base.colonists.map((rt) => ({
+      ...rt,
+      colonist: { ...rt.colonist, stress: { level: 0.9 } },
+      execution: null,
+    }));
+    const relationships = applyInteraction(createRelationshipStore(), {
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      tick: 0,
+      changeSource: "directConflict",
+      initiatorId: null,
+      responderId: null,
+      aTowardBDelta: -80,
+      bTowardADelta: -80,
+    }).store;
+    const result = tick({ ...base, colonists: idle, relationships, hasBootstrapped: true }, 1);
+    expect(result.events.some((e) => e.kind === "confrontationOccurred")).toBe(false);
+    expect(result.state.colonists.every((r) => r.inConflictUntilTick === null)).toBe(true);
+  });
+
+  it("fixed-seed run including Confrontation reproduces on replay", () => {
+    let seedUsed: number | null = null;
+    let initialWithFire: SimulationState | null = null;
+    for (let seed = 1; seed <= 200; seed++) {
+      const initial = workstationPairState(seed);
+      const result = tick(initial, 1);
+      if (result.events.some((e) => e.kind === "confrontationOccurred")) {
+        seedUsed = seed;
+        initialWithFire = initial;
+        break;
+      }
+    }
+    expect(seedUsed).not.toBeNull();
+    const a = tick(initialWithFire!, 1);
+    const b = tick(initialWithFire!, 1);
+    expect(a.events).toEqual(b.events);
+    expect(a.state.prng).toEqual(b.state.prng);
+    expect(a.state.colonists.map((r) => r.inConflictUntilTick)).toEqual(b.state.colonists.map((r) => r.inConflictUntilTick));
   });
 });

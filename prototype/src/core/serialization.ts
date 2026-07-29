@@ -41,7 +41,7 @@ import type { DecisionLog, DecisionRecord, EventLog, EventRecord } from "../reco
 import { validateSimulationState, type ColonistRuntime, type SimulationState, type TickEvent } from "../simulation/tick.js";
 
 /** The current save format version — bump on any incompatible SimulationState shape change. */
-export const SAVE_FORMAT_VERSION = 7; // v7: Stage 2 Slice 7 — Comfort widens the persisted action, social-task, and stress-channel unions (design/comfort-assist-protocol.md D13; ADR-24).
+export const SAVE_FORMAT_VERSION = 8; // v8: Stage 2 Slice 8 — Confrontation / In Conflict (ADR-25: inConflictUntilTick, hostileProximityConflict, confrontationOccurred).
 
 const GOAL_STATUSES: readonly GoalStatus[] = ["active", "suspended", "blocked", "completed", "abandoned"];
 const EXECUTION_STATUSES: readonly ExecutionStatus[] = ["inProgress", "interrupted", "completed", "aborted"];
@@ -70,7 +70,9 @@ const STRESS_CHANNEL_IDS: readonly StressChannelId[] = [
   "restAdequacy",
   "needsSatisfied",
   "positiveSocialProximity",
+  "hostileProximityConflict",
 ];
+const CONFLICT_SEVERITIES = ["hostile", "fractured"] as const;
 const MEMORY_FORMED_TYPES = ["deprivation", "condition", "relational"] as const;
 
 function fail(reason: string): never {
@@ -294,8 +296,15 @@ function readColonists(raw: unknown, clockTick: number): readonly ColonistRuntim
       deprivationBaselines: readDeprivationBaselines(o.deprivationBaselines, `${field}.deprivationBaselines`),
       stressBaseline: expectNumber(o.stressBaseline, `${field}.stressBaseline`),
       relationshipAffinityBaselines: readRelationshipAffinityBaselines(o.relationshipAffinityBaselines, `${field}.relationshipAffinityBaselines`),
+      inConflictUntilTick: readInConflictUntilTick(o.inConflictUntilTick, `${field}.inConflictUntilTick`),
     };
   });
+}
+
+/** ADR-25 D4: null or non-negative integer; expired (<= clock) values are valid inert state. */
+function readInConflictUntilTick(raw: unknown, field: string): number | null {
+  if (raw === null) return null;
+  return expectNonNegativeInteger(raw, field);
 }
 
 function readColonist(raw: unknown, clockTick: number, field: string): ColonistState {
@@ -492,7 +501,7 @@ function readStressContribution(raw: unknown, field: string): StressContribution
   };
 }
 
-function readTickEvent(raw: unknown, field: string): TickEvent {
+function readTickEvent(raw: unknown, field: string, knownColonistIds: ReadonlySet<string>): TickEvent {
   const o = expectObject(raw, field);
   const kind = expectString(o.kind, `${field}.kind`);
   switch (kind) {
@@ -618,6 +627,25 @@ function readTickEvent(raw: unknown, field: string): TickEvent {
           readStressContribution(c, `${field}.contributions[${i}]`),
         ),
       };
+    case "confrontationOccurred": {
+      // ADR-25 D2a / D4: full payload schema + load rejection rules.
+      const colonistAId = expectString(o.colonistAId, `${field}.colonistAId`);
+      const colonistBId = expectString(o.colonistBId, `${field}.colonistBId`);
+      if (!knownColonistIds.has(colonistAId)) fail(`"${field}.colonistAId" references an unknown colonist id`);
+      if (!knownColonistIds.has(colonistBId)) fail(`"${field}.colonistBId" references an unknown colonist id`);
+      if (colonistAId === colonistBId) fail(`"${field}" self-pair is invalid`);
+      if (!(colonistAId < colonistBId)) fail(`"${field}" colonist ids must be in canonical (min, max) order`);
+      const combinedStress = expectNumber(o.combinedStress, `${field}.combinedStress`);
+      if (combinedStress < 0 || combinedStress > 2) fail(`"${field}.combinedStress" must be in [0, 2]`);
+      return {
+        kind: "confrontationOccurred",
+        colonistAId,
+        colonistBId,
+        sharedModuleId: expectOneOf(o.sharedModuleId, MODULE_IDS, `${field}.sharedModuleId`),
+        combinedStress,
+        severity: expectOneOf(o.severity, CONFLICT_SEVERITIES, `${field}.severity`),
+      };
+    }
     default:
       return fail(`"${field}.kind" has unrecognized value "${kind}"`);
   }
@@ -629,7 +657,7 @@ function readTickEvent(raw: unknown, field: string): TickEvent {
 // each record's payload via readTickEvent/readDecisionOutcome above — a corrupted or
 // hand-edited payload is rejected exactly like a corrupted top-level field. ---
 
-function readEventLog(raw: unknown): EventLog {
+function readEventLog(raw: unknown, knownColonistIds: ReadonlySet<string>): EventLog {
   const entries = expectArray(raw, "eventLog");
   let previousTick = -1;
   return entries.map((entryRaw, i): EventRecord => {
@@ -640,7 +668,7 @@ function readEventLog(raw: unknown): EventLog {
     const tick = expectNonNegativeInteger(o.tick, `${field}.tick`);
     if (tick < previousTick) fail(`"${field}.tick" must not decrease (got ${tick} after ${previousTick})`);
     previousTick = tick;
-    return { seq, tick, event: readTickEvent(o.event, `${field}.event`) };
+    return { seq, tick, event: readTickEvent(o.event, `${field}.event`, knownColonistIds) };
   });
 }
 
@@ -722,7 +750,7 @@ export function deserialize(json: string): SimulationState {
     colonists,
     prng: deserializePrng(JSON.stringify(o.prng)),
     hasBootstrapped: expectBoolean(o.hasBootstrapped, "hasBootstrapped"),
-    eventLog: readEventLog(o.eventLog),
+    eventLog: readEventLog(o.eventLog, knownColonistIds),
     decisionLog: readDecisionLog(o.decisionLog),
     relationships: deserializeRelationshipStore(o.relationships, knownColonistIds, clock.tick),
     // ADR-21 D5: the social offer slice validates against the same known-colonist set and

@@ -36,10 +36,13 @@ import { periodAt } from "./policy.js";
  * A nearby colonist's Tier-1-observable facts only (ADR-05's seven states) — "a colonist
  * knows what the player can see" (locked #21). No internals (needs, stress, goals, memory)
  * are representable in this type; that is the boundary, not an omission.
+ * `moduleId` is a transient co-location proxy for Confrontation (design D1b) — derived from
+ * the in-progress execution's task module, never persisted.
  */
 export interface ObservableColonist {
   readonly id: string;
   readonly ambientState: string;
+  readonly moduleId: ModuleId | null;
 }
 
 /** The fixed, per-decision world snapshot (decision-loop §1b). */

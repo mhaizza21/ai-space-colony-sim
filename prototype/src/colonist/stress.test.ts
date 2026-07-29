@@ -8,8 +8,10 @@ import {
   evaluateStress,
   exceedsTaskAcceptanceThreshold,
   isStressedState,
+  stressResponseConflictMultiplier,
   type StressState,
 } from "./stress.js";
+import type { TraitId } from "./traits.js";
 
 function fullySatisfied(): NeedsState {
   return createNeeds();
@@ -189,11 +191,12 @@ describe("clamping", () => {
 });
 
 describe("attribution — every channel always present, decomposable", () => {
-  it("always returns all six channels, even when their contribution is zero", () => {
+  it("always returns all seven channels, even when their contribution is zero", () => {
     const result = evaluateStress(createStress(), fullySatisfied(), 100);
     const ids = result.contributions.map((c) => c.id).sort();
     expect(ids).toEqual([
       "biologicalStrain",
+      "hostileProximityConflict",
       "needsSatisfied",
       "overwork",
       "positiveSocialProximity",
@@ -207,6 +210,23 @@ describe("attribution — every channel always present, decomposable", () => {
     const comforted = evaluateStress(createStress(), fullySatisfied(), 100, [], false, true);
     expect(idle.contributions.find((c) => c.id === "positiveSocialProximity")!.rawDelta).toBe(0);
     expect(comforted.contributions.find((c) => c.id === "positiveSocialProximity")!.rawDelta).toBeLessThan(0);
+  });
+
+  it("hostileProximityConflict is a one-shot spike via conflictSpike input, not rate×ticks", () => {
+    const none = evaluateStress(createStress(), fullySatisfied(), 100, [], false, false, 0);
+    const spiked = evaluateStress({ level: 0.2 }, fullySatisfied(), 0, [], false, false, STRESS_TUNING.hostileProximityConflictSpike);
+    expect(none.contributions.find((c) => c.id === "hostileProximityConflict")!.rawDelta).toBe(0);
+    expect(spiked.contributions.find((c) => c.id === "hostileProximityConflict")!.rawDelta).toBe(
+      STRESS_TUNING.hostileProximityConflictSpike,
+    );
+    expect(spiked.state.level).toBeCloseTo(0.2 + STRESS_TUNING.hostileProximityConflictSpike, 10);
+  });
+
+  it("stressResponseConflictMultiplier returns exactly 1 for every currently-defined TraitId (hook-only)", () => {
+    for (const trait of ["driven", "resilient", "gregarious", "wary"] as const satisfies readonly TraitId[]) {
+      expect(stressResponseConflictMultiplier([trait])).toBe(1);
+    }
+    expect(stressResponseConflictMultiplier([])).toBe(1);
   });
 
   it("overwork accumulates only while executing the shift-assignment task (isWorking=true)", () => {

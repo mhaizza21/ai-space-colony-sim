@@ -267,6 +267,14 @@ describe("REGRESSION (Copilot-confirmed): ambientStateFor — the seven-state ob
     expect(ambientStateFor(null, stressed)).toBe("stressed");
   });
 
+  it("inConflict overlay outranks stressed while currentTick < inConflictUntilTick (design D6)", () => {
+    expect(ambientStateFor(beginExecution(workTask, workGoal, 0), stressed, 10, 5)).toBe("inConflict");
+    expect(ambientStateFor(null, stressed, 10, 5)).toBe("inConflict");
+    // Window ended: reverts to stressed
+    expect(ambientStateFor(beginExecution(workTask, workGoal, 0), stressed, 10, 10)).toBe("stressed");
+    expect(ambientStateFor(beginExecution(workTask, workGoal, 0), calm, 10, 10)).toBe("working");
+  });
+
   it("is pure and deterministic", () => {
     const exec = beginExecution(workTask, workGoal, 0);
     expect(ambientStateFor(exec, calm)).toBe(ambientStateFor(exec, calm));

@@ -286,8 +286,8 @@ describe("read-boundary regression: pairView stays off the decision path (ADR-20
 describe("decomposition remains exact with a populated snapshot in scope (Stage 2 build step 6)", () => {
   it("a 3-colonist-scale WorldSnapshot in hand does not change decomposition for a candidate with no relatedColonistId", () => {
     const nearbyColonists: readonly ObservableColonist[] = [
-      { id: "bob", ambientState: "working" },
-      { id: "carol", ambientState: "resting" },
+      { id: "bob", ambientState: "working", moduleId: "workstation" },
+      { id: "carol", ambientState: "resting", moduleId: "restBunk" },
     ];
     const snapshot = buildSnapshot(createClock(), createDefaultPolicy(), createWorld(), nearbyColonists);
     expect(snapshot.nearbyColonists).toHaveLength(2); // sanity: the scenario really is 3-colonist scale

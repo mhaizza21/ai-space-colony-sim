@@ -177,13 +177,22 @@ const TASK_AMBIENT_STATE: Readonly<Record<TaskId, AmbientState>> = {
 /**
  * The colonist's Tier-1 observable ambient state (ADR-05; decision-loop §10) — the "seven-state
  * observable registry" the linked #103 acceptance criteria require. Pure: reads only the
- * execution and stress state M12/M7 already own, publishes nothing itself. Stress reads as
- * "stressed" regardless of what task is executing — the internal load overrides the visible
- * activity, matching ADR-05's own description of the state ("erratic or slowed movement").
- * A colonist with no in-progress execution (blocked, or between decisions) reads "blocked" —
- * "motionless, not resting, not on task," per decision-loop §3's Blocked ambient signal.
+ * execution, stress, and optional In Conflict overlay M12/M7/ADR-25 already own, publishes
+ * nothing itself. While `inConflictUntilTick` is active (`currentTick < inConflictUntilTick`),
+ * the overlay outranks stressed and every task-derived state (design D6). Otherwise stress
+ * reads as "stressed" regardless of what task is executing — the internal load overrides the
+ * visible activity, matching ADR-05's own description of the state ("erratic or slowed
+ * movement"). A colonist with no in-progress execution (blocked, or between decisions) reads
+ * "blocked" — "motionless, not resting, not on task," per decision-loop §3's Blocked ambient
+ * signal.
  */
-export function ambientStateFor(execution: Execution | null, stress: StressState): AmbientState {
+export function ambientStateFor(
+  execution: Execution | null,
+  stress: StressState,
+  inConflictUntilTick: number | null = null,
+  currentTick = 0,
+): AmbientState {
+  if (inConflictUntilTick !== null && currentTick < inConflictUntilTick) return "inConflict";
   if (isStressedState(stress)) return "stressed";
   if (execution === null || execution.status !== "inProgress") return "blocked";
   return TASK_AMBIENT_STATE[execution.taskId];
