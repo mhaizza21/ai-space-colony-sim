@@ -5,13 +5,16 @@
 import { describe, expect, it } from "vitest";
 import { advance, createClock } from "../core/clock.js";
 import { createPrng, next } from "../core/prng.js";
-import { createColonist, withNeeds, withStress } from "../colonist/colonist.js";
+import { createColonist, withMemory, withNeeds, withStress } from "../colonist/colonist.js";
 import { createDefaultPolicy } from "../world/policy.js";
 import { createWorld, setModuleFunctional, consumeFood } from "../world/world.js";
 import { buildSnapshot, type WorldSnapshot } from "../world/snapshot.js";
 import type { GoalCandidate } from "./goals.js";
 import { decideFromCandidates, decideNext } from "./decide.js";
 import { createNeeds } from "../colonist/needs.js";
+import { MEMORY_TUNING } from "../config/tuning.js";
+import { influence, type MemoryEntry, type MemoryPool } from "../colonist/memory.js";
+import { applyInteraction, createRelationshipStore, perspective } from "../colonist/relationships.js";
 
 const survival: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:z", baseUrgency: 999 };
 const survival2: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:a", baseUrgency: 1 };
@@ -281,6 +284,167 @@ describe("decideNext forwards the colonist's traits to candidate generation (Cop
     const outcome = decideNext(drivenColonist, freeSnapshot, seed, 0);
     expect(outcome.kind).toBe("commit");
     if (outcome.kind === "commit") expect(outcome.goal.source).toBe("voluntary");
+  });
+});
+
+// --- Stage 2 Slice 9 (design/stage-2-validation-plan.md §3/§10): relationship and memory state
+// must not merely tilt a weight — it must be able to change WHICH candidate a later decision
+// selects. Both scenarios use hand-authored magnitudes rather than seed-hunting, per the plan's
+// own stated preference; the fixed seed's draw is asserted against the flip window it has to sit
+// in, so the choice of seed explains itself instead of being an unexplained constant.
+
+describe("Stage 2 Slice 9 — relationship state flips which candidate a later decision selects", () => {
+  const freeSnapshot: WorldSnapshot = buildSnapshot(advance(createClock(), 960), createDefaultPolicy(), createWorld());
+  const untraitedColonist = createColonist("c1", "Maya"); // no traits, no stress: the relationship family is the only live tilt
+  const idleCandidate: GoalCandidate = { source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 };
+  const socialCandidate: GoalCandidate = {
+    source: "voluntary",
+    tier: 5,
+    key: "voluntary:social:conversation:zeke",
+    baseUrgency: 0.2,
+    relatedColonistId: "zeke",
+    relatedSocialTaskId: "conversation",
+  };
+
+  /** A real M10 store built the same way a run builds one: one large hand-authored interaction. */
+  function storeWithAffinity(delta: number) {
+    return applyInteraction(createRelationshipStore(), {
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      tick: 0,
+      changeSource: delta < 0 ? "directConflict" : "sharedTaskCompletion",
+      initiatorId: null,
+      responderId: null,
+      aTowardBDelta: delta,
+      bTowardADelta: delta,
+    }).store;
+  }
+
+  it("the same seed and candidates select the social candidate when bonded and the unrelated one when hostile", () => {
+    const bonded = storeWithAffinity(100);
+    const hostile = storeWithAffinity(-100);
+    expect(perspective(bonded, "c1", "zeke").affinity).toBeGreaterThan(0);
+    expect(perspective(hostile, "c1", "zeke").affinity).toBeLessThan(0);
+
+    // Both candidates share the same base weight, so the relationship tilt alone decides where
+    // the draw lands: the unrelated candidate holds 0.2/0.55 of the total when bonded and
+    // 0.2/0.314 of it when hostile. Seed 10's single draw sits between those two shares, which
+    // is exactly the interval in which the two relationship states disagree.
+    const drawValue = next(createPrng(10)).value;
+    expect(drawValue).toBeGreaterThan(0.2 / 0.55);
+    expect(drawValue).toBeLessThan(0.2 / 0.314);
+
+    const candidates = [idleCandidate, socialCandidate];
+    const whenBonded = decideFromCandidates(candidates, untraitedColonist, createPrng(10), 0, freeSnapshot, bonded);
+    const whenHostile = decideFromCandidates(candidates, untraitedColonist, createPrng(10), 0, freeSnapshot, hostile);
+
+    expect(whenBonded.kind).toBe("commit");
+    expect(whenHostile.kind).toBe("commit");
+    if (whenBonded.kind !== "commit" || whenHostile.kind !== "commit") return;
+    expect(whenBonded.goal.key).toBe(socialCandidate.key);
+    expect(whenHostile.goal.key).toBe(idleCandidate.key);
+    // The flip is the relationship family's doing, not a different draw or a different tier.
+    expect(whenBonded.draws.map((d) => d.value)).toEqual(whenHostile.draws.map((d) => d.value));
+    expect(whenBonded.winningTier).toBe(whenHostile.winningTier);
+  });
+
+  it("the relationship tilt is what moved, and it stays inside the family bound", () => {
+    const candidates = [idleCandidate, socialCandidate];
+    const bonded = decideFromCandidates(candidates, untraitedColonist, createPrng(10), 0, freeSnapshot, storeWithAffinity(100));
+    const hostile = decideFromCandidates(candidates, untraitedColonist, createPrng(10), 0, freeSnapshot, storeWithAffinity(-100));
+    if (bonded.kind !== "commit" || hostile.kind !== "commit") throw new Error("expected commits");
+    const socialWeight = (outcome: typeof bonded) => outcome.composedWeights.find((w) => w.key === socialCandidate.key)!;
+    const idleWeight = (outcome: typeof bonded) => outcome.composedWeights.find((w) => w.key === idleCandidate.key)!;
+
+    expect(socialWeight(bonded).relationships).toBeGreaterThan(1);
+    expect(socialWeight(hostile).relationships).toBeLessThan(1);
+    // The unrelated candidate carries no relationship contribution in either state.
+    expect(idleWeight(bonded).relationships).toBe(1);
+    expect(idleWeight(hostile).relationships).toBe(1);
+    expect(idleWeight(bonded).composed).toBeCloseTo(idleWeight(hostile).composed, 12);
+  });
+});
+
+describe("Stage 2 Slice 9 — a formed memory flips which candidate a later decision selects", () => {
+  const untraitedColonist = createColonist("c1", "Maya");
+  const decisionTick = 100; // "later": the memories below formed at tick 0
+
+  /** Hand-authored deprivation memories, the only memory type the weight family reads. */
+  function deprivationPool(needId: "hunger" | "rest"): MemoryPool {
+    return [0, 1].map<MemoryEntry>((id) => ({
+      id,
+      type: "deprivation",
+      context: { needId },
+      formedAtTick: 0,
+      impact: 1,
+    }));
+  }
+
+  it("with no memory the rest candidate wins; the same decision with hunger memories selects hunger instead", () => {
+    // memoryContributions only matches a candidate's own relatedNeed, so a hunger memory lifts
+    // lowA and leaves lowB untouched. Seed 13's draw sits between the no-memory share (0.5) and
+    // the capped-memory share (0.525/0.825) — the window where the two pools disagree.
+    const drawValue = next(createPrng(13)).value;
+    expect(drawValue).toBeGreaterThan(0.5);
+    expect(drawValue).toBeLessThan(0.525 / 0.825);
+
+    const candidates = [lowA, lowB];
+    const withoutMemory = decideFromCandidates(candidates, untraitedColonist, createPrng(13), decisionTick, workSnapshot);
+    const withHungerMemory = decideFromCandidates(
+      candidates,
+      withMemory(untraitedColonist, deprivationPool("hunger")),
+      createPrng(13),
+      decisionTick,
+      workSnapshot,
+    );
+    const withRestMemory = decideFromCandidates(
+      candidates,
+      withMemory(untraitedColonist, deprivationPool("rest")),
+      createPrng(13),
+      decisionTick,
+      workSnapshot,
+    );
+
+    if (withoutMemory.kind !== "commit" || withHungerMemory.kind !== "commit" || withRestMemory.kind !== "commit") {
+      throw new Error("expected commits");
+    }
+    expect(withoutMemory.goal.key).toBe(lowB.key);
+    expect(withHungerMemory.goal.key).toBe(lowA.key); // the flip
+    expect(withRestMemory.goal.key).toBe(lowB.key); // the mirrored memory does not flip it back
+    expect(withHungerMemory.draws.map((d) => d.value)).toEqual(withoutMemory.draws.map((d) => d.value));
+  });
+
+  it("the flipping memories are still inside their non-negligible influence window at the decision tick", () => {
+    // ADR-16's fade curve: influence = recency x impact, recency = 1 - recencyDecayPerTick x age.
+    // The decision above happens 100 ticks after formation, so the memories are demonstrably
+    // faded but far from spent — the flip is not an artifact of reading a memory at age zero.
+    const [entry] = deprivationPool("hunger");
+    const value = influence(entry!, decisionTick);
+    expect(value).toBeCloseTo(1 - MEMORY_TUNING.recencyDecayPerTick * decisionTick, 12);
+    expect(value).toBeGreaterThan(0);
+    expect(value).toBeLessThan(entry!.impact);
+  });
+
+  it("relational memories are not read by the weight family at all — only deprivation memories tilt a candidate", () => {
+    // Recorded because §3's own wording asks for a relational-memory-driven flip: memoryContributions
+    // filters on `type === "deprivation"` matching the candidate's relatedNeed, so a relational
+    // memory cannot reach candidate weighting without new production code — which this test-only
+    // slice does not add. Surfaced as a finding, pinned here so a later slice cannot drift silently.
+    const relationalPool: MemoryPool = [
+      { id: 0, type: "relational", context: { otherId: "zeke", direction: "negative" }, formedAtTick: 0, impact: 1 },
+    ];
+    const outcome = decideFromCandidates(
+      [lowA, lowB],
+      withMemory(untraitedColonist, relationalPool),
+      createPrng(13),
+      decisionTick,
+      workSnapshot,
+    );
+    if (outcome.kind !== "commit") throw new Error("expected a commit");
+    for (const weight of outcome.composedWeights) {
+      expect(weight.memoryContributions).toEqual([]);
+      expect(weight.memory).toBe(1);
+    }
   });
 });
 

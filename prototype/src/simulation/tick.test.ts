@@ -11,8 +11,8 @@ import { createPrng } from "../core/prng.js";
 import { deserialize, serialize } from "../core/serialization.js";
 import { createDefaultPolicy } from "../world/policy.js";
 import { createWorld, setModuleFunctional } from "../world/world.js";
-import { CONFLICT_TUNING, SOCIAL_OFFER_TUNING, TASK_TUNING } from "../config/tuning.js";
-import { createColonist, withCurrentGoal, withNeeds, withSuspendedGoal } from "../colonist/colonist.js";
+import { CONFLICT_TUNING, MEMORY_TUNING, SOCIAL_OFFER_TUNING, STRESS_TUNING, TASK_TUNING } from "../config/tuning.js";
+import { createColonist, withCurrentGoal, withNeeds, withStress, withSuspendedGoal } from "../colonist/colonist.js";
 import type { TraitId } from "../colonist/traits.js";
 import { createNeeds } from "../colonist/needs.js";
 import { createFreshMemoryBaselines, tick, validateSimulationState, type ColonistRuntime, type SimulationState } from "./tick.js";
@@ -24,6 +24,7 @@ import { taskDefinition } from "../task/tasks.js";
 import { createDecisionLog, createEventLog } from "../records/logs.js";
 import { applyInteraction, createRelationshipStore, perspective } from "../colonist/relationships.js";
 import { createSocialOfferStore, type SocialOffer } from "../task/socialOffers.js";
+import { inspect } from "../inspection/inspector.js";
 
 const policy = createDefaultPolicy();
 
@@ -1698,5 +1699,327 @@ describe("Stage 2 Slice 8 — Confrontation / In Conflict (design §14)", () => 
     expect(a.events).toEqual(b.events);
     expect(a.state.prng).toEqual(b.state.prng);
     expect(a.state.colonists.map((r) => r.inConflictUntilTick)).toEqual(b.state.colonists.map((r) => r.inConflictUntilTick));
+  });
+});
+
+// --- Stage 2 Slice 9 — cross-slice validation sweep (design/stage-2-validation-plan.md §10).
+// Test-only; no prototype/src production module is added or changed by this slice.
+
+const runtimeOf = (state: SimulationState, id: string): ColonistRuntime =>
+  state.colonists.find((r) => r.colonist.identity.id === id)!;
+
+/** Steps one tick at a time and keeps every intermediate result — per-tick deltas must be visible. */
+function stepTicks(initial: SimulationState, ticks: number): readonly ReturnType<typeof tick>[] {
+  const results: ReturnType<typeof tick>[] = [];
+  let state = initial;
+  for (let i = 0; i < ticks; i++) {
+    const result = tick(state, 1);
+    results.push(result);
+    state = result.state;
+  }
+  return results;
+}
+
+/**
+ * Mid-run state: c1 holds a committed Comfort goal toward zeke plus its pending offer, created
+ * "last tick" — the same hand-built shape the Slice 5 block's `pendingOfferState` uses for
+ * Conversation. Comfort's responder eligibility is `ambientState === "stressed"` (ADR-24 D2),
+ * deliberately outside INTERRUPTIBLE_AMBIENT_STATES, so zeke carries genuine stress well above the
+ * threshold; an unstressed zeke declines with responderNotInterruptible and the scenario never
+ * starts. zeke also holds his own valid idlePresence pair so his decision loop stays out of these
+ * tests, and his stress baseline matches his actual stress so no spurious Condition memory forms.
+ */
+function pendingComfortState(seed = 7, offerOverrides: Partial<SocialOffer> = {}): SimulationState {
+  const freeStart = policy.workTicks + policy.restTicks;
+  const base = stateAtTickOfDay(freeStart, { social: { level: 0.45, ticksBelowLow: 0 }, purpose: { level: 0.5, ticksBelowLow: 0 } }, seed);
+  const tickNow = base.clock.tick;
+  const goal = commitGoal(
+    {
+      source: "voluntary",
+      tier: 5,
+      key: "voluntary:social:comfort:zeke",
+      baseUrgency: 0.2,
+      relatedColonistId: "zeke",
+      relatedSocialTaskId: "comfort",
+    },
+    "test comfort motivation",
+    tickNow,
+  );
+  const offer: SocialOffer = {
+    id: 0,
+    initiatorId: "c1",
+    responderId: "zeke",
+    action: "comfort",
+    createdAtTick: tickNow,
+    respondableAtTick: tickNow + 1,
+    expiresAtTick: tickNow + 4,
+    status: "pending",
+    resolvedAtTick: null,
+    reason: null,
+    ...offerOverrides,
+  };
+  const zekeGoal = commitGoal({ source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 }, "test fixture idle", tickNow);
+  // zeke's Social starts below the 1.0 ceiling on purpose: a saturated need would swallow
+  // Comfort's own credit in the clamp and make the crediting assertions vacuously pass.
+  const zekeNeeds = { ...createNeeds(), social: { level: 0.45, ticksBelowLow: 0 }, purpose: { level: 0.5, ticksBelowLow: 0 } } as ReturnType<typeof createNeeds>;
+  const zekeRuntime: ColonistRuntime = {
+    colonist: withStress(withNeeds(withCurrentGoal(createColonist("zeke", "Zeke"), zekeGoal), zekeNeeds), { level: 0.9 }),
+    execution: beginExecution(taskDefinition("idlePresence"), zekeGoal, tickNow),
+    suspendedExecution: null,
+    ...createFreshMemoryBaselines(),
+    stressBaseline: 0.9,
+  };
+  const withGoal = withRuntime(base, { colonist: withCurrentGoal(base.colonists[0]!.colonist, goal) });
+  return {
+    ...withGoal,
+    colonists: [...withGoal.colonists, zekeRuntime].sort((a, b) => (a.colonist.identity.id < b.colonist.identity.id ? -1 : 1)),
+    hasBootstrapped: true,
+    socialOffers: { offers: [offer], nextOfferSequence: 1 },
+  };
+}
+
+/** The same fixture with an unstressed responder — Comfort's stressed-only eligibility then fails. */
+function withCalmResponder(state: SimulationState): SimulationState {
+  return {
+    ...state,
+    colonists: state.colonists.map((rt) =>
+      rt.colonist.identity.id === "zeke" ? { ...rt, colonist: withStress(rt.colonist, { level: 0 }), stressBaseline: 0 } : rt,
+    ),
+  };
+}
+
+describe("Stage 2 Slice 9 — accepted Comfort real-run consequences (validation plan §10)", () => {
+  const reliefEvents = (result: ReturnType<typeof tick>) =>
+    result.events.filter(
+      (e) => e.kind === "stressEvaluated" && e.contributions.some((c) => c.id === "positiveSocialProximity" && c.rawDelta < 0),
+    );
+
+  it("accepts the offer and begins a real comfort execution through the existing offer lifecycle", () => {
+    // seed 7's first draw ≈ 0.0117 < 0.65 (Comfort's own acquainted band) → accepted.
+    const result = tick(pendingComfortState(), 1);
+    const offer = result.state.socialOffers.offers[0]!;
+    expect(offer.status).toBe("accepted");
+    expect(offer.action).toBe("comfort");
+    expect(offer.reason).toBeNull();
+    expect(runtimeOf(result.state, "c1").execution?.taskId).toBe("comfort");
+    expect(result.events.some((e) => e.kind === "executionBegun" && e.taskId === "comfort")).toBe(true);
+  });
+
+  it("applies positiveSocialProximity relief to the recipient only, decomposable in a stressEvaluated event", () => {
+    const steps = stepTicks(pendingComfortState(), 3);
+    // The Comfort participation basis is built from tick-start state (design D12), so the tick
+    // that ACCEPTS the offer cannot yet grant relief — it starts on the first full execution tick.
+    expect(reliefEvents(steps[0]!)).toHaveLength(0);
+    for (const step of [steps[1]!, steps[2]!]) {
+      const withRelief = reliefEvents(step);
+      expect(withRelief).toHaveLength(1); // exactly one of the two colonists — the recipient, not both
+      expect(withRelief[0]!.kind === "stressEvaluated" && withRelief[0]!.contributions).toContainEqual({
+        id: "positiveSocialProximity",
+        rawDelta: -STRESS_TUNING.positiveSocialProximityReliefPerTick,
+      });
+    }
+    // The single relieved colonist is the recipient: zeke's stress falls faster once Comfort is
+    // running than it did on the pre-acceptance tick, on otherwise identical need conditions.
+    const zekeStress = (step: ReturnType<typeof tick>) => runtimeOf(step.state, "zeke").colonist.stress.level;
+    expect(zekeStress(steps[1]!) - zekeStress(steps[2]!)).toBeGreaterThan(0.9 - zekeStress(steps[0]!));
+  });
+
+  it("credits Social to BOTH participants per Comfort's own D7 table, and never credits Purpose", () => {
+    // NOTE (validation-plan discrepancy, surfaced not silently resolved): §10's Comfort bullet
+    // reads "credits no Social-need restoration to either participant". That is the
+    // comfort-assist-protocol v0.4.0 §9 **Non-effects** row, which governs declined/cancelled/
+    // expired offers. For an ACCEPTED Comfort the same §9 table's Social row is
+    // `comfortSocialRestorePerTick`, initiator and responder, "Both" — and that is what shipped
+    // (tick.ts Phase 6). This test pins the shipped, Human-approved behavior in both directions;
+    // the plan bullet is reported as a finding rather than asserted as written.
+    const social = (state: SimulationState, id: string) => runtimeOf(state, id).colonist.needs.social.level;
+    const purpose = (state: SimulationState, id: string) => runtimeOf(state, id).colonist.needs.purpose.level;
+
+    // Two one-tick runs from the same fixture, differing only in whether the Comfort is accepted:
+    // the calm-responder control fails Comfort's stressed-only eligibility, so it declines and no
+    // Comfort executes. Isolating a single tick keeps both sides free of re-decision noise, and
+    // the difference between them is exactly the credit under test — need decay cancels out.
+    const accepted = pendingComfortState();
+    const declined = withCalmResponder(pendingComfortState());
+    const afterAccepted = tick(accepted, 1);
+    const afterDeclined = tick(declined, 1);
+    expect(afterAccepted.state.socialOffers.offers[0]!.status).toBe("accepted");
+    expect(afterDeclined.state.socialOffers.offers[0]!.status).toBe("declined");
+
+    for (const id of ["c1", "zeke"]) {
+      const withComfort = social(afterAccepted.state, id) - social(accepted, id);
+      const withoutComfort = social(afterDeclined.state, id) - social(declined, id);
+      expect(withoutComfort).toBeLessThan(0); // decay alone
+      expect(withComfort - withoutComfort).toBeCloseTo(TASK_TUNING.comfortSocialRestorePerTick, 9);
+      // Purpose is never credited by any social action (ADR-17 D6 / ADR-18 D7 distinctness).
+      expect(purpose(afterAccepted.state, id)).toBeLessThan(purpose(accepted, id));
+    }
+  });
+
+  it("a declined Comfort credits no Social and applies no positive affinity (§9 non-effects)", () => {
+    // seed 1's first draw ≈ 0.6271 — below Conversation's 0.55 band it would decline; against
+    // Comfort's higher acquainted band (0.65) it still lands under, so the decline is forced by
+    // making the responder ineligible instead: an unstressed zeke is not a valid Comfort target.
+    const base = withCalmResponder(pendingComfortState(1));
+    const socialBefore = { c1: runtimeOf(base, "c1").colonist.needs.social.level, zeke: runtimeOf(base, "zeke").colonist.needs.social.level };
+    const result = tick(base, 1);
+    const offer = result.state.socialOffers.offers[0]!;
+    expect(offer.status).toBe("declined");
+    expect(offer.reason).toBe("responderNotInterruptible");
+    expect(runtimeOf(result.state, "c1").execution?.taskId).not.toBe("comfort");
+    expect(runtimeOf(result.state, "c1").colonist.needs.social.level).toBeLessThan(socialBefore.c1);
+    expect(runtimeOf(result.state, "zeke").colonist.needs.social.level).toBeLessThan(socialBefore.zeke);
+    // Decline friction only — never Comfort's positive mutualSupportCrisis delta.
+    expect(perspective(result.state.relationships, "c1", "zeke").affinity).toBeLessThan(0);
+    expect(perspective(result.state.relationships, "zeke", "c1").affinity).toBeLessThan(0);
+  });
+
+  it("accumulates positive mutualSupportCrisis affinity but cannot reach ADR-16 relational-memory significance on its provisional tuning", () => {
+    // §10 asks that an accepted Comfort form a relational memory "when ADR-16's significance
+    // criteria are met (or documents ... why a smaller-magnitude interaction did not)". This is
+    // that documentation, measured rather than assumed. comfortAffinityDeltaPerTick is 0.04, so
+    // relationshipChangeSignificance (15) needs ~375 crediting ticks; a Comfort accepted at the
+    // start of the free period sustains a few hundred and still lands short. That is calibration
+    // feedback for the Comfort design's own deferred DQ-2 (the sibling of the validation plan's
+    // Finding 4 for Confrontation) — this slice records it and changes no tuning.
+    const steps = stepTicks(pendingComfortState(), policy.freeTicks);
+    const comfortTicks = steps.filter((s) => runtimeOf(s.state, "c1").execution?.taskId === "comfort").length;
+    expect(comfortTicks).toBeGreaterThan(policy.freeTicks / 2); // genuinely sustained, not a one-tick brush
+
+    const affinity = perspective(steps[steps.length - 1]!.state.relationships, "c1", "zeke").affinity;
+    expect(affinity).toBeGreaterThan(0); // positive and both-directional, as D7's table requires
+    expect(perspective(steps[steps.length - 1]!.state.relationships, "zeke", "c1").affinity).toBeGreaterThan(0);
+    expect(affinity).toBeLessThan(MEMORY_TUNING.relationshipChangeSignificance);
+    expect(steps.some((s) => s.events.some((e) => e.kind === "memoryFormed" && e.memoryType === "relational"))).toBe(false);
+  });
+
+  it("rejects a second Comfort claim on the same recipient through a real tick (ADR-24 Invariant 12)", () => {
+    // Admission side: with c1's Comfort already in progress, a second pending Comfort offer
+    // naming zeke is declined by Phase 6's D11.5(a) claimed-recipient guard, and the produced
+    // state still satisfies the invariant.
+    const accepted = tick(pendingComfortState(), 1).state;
+    const maya = { id: "ada", name: "Ada", skills: [] as readonly string[], baseTraits: [] as readonly TraitId[] };
+    const withThird = withOthers(accepted, [maya]);
+    const thirdGoal = commitGoal(
+      { source: "voluntary", tier: 5, key: "voluntary:social:comfort:zeke", baseUrgency: 0.2, relatedColonistId: "zeke", relatedSocialTaskId: "comfort" },
+      "second comforter",
+      accepted.clock.tick,
+    );
+    const contested: SimulationState = {
+      ...withThird,
+      colonists: withThird.colonists.map((rt) =>
+        rt.colonist.identity.id === "ada" ? { ...rt, colonist: withCurrentGoal(rt.colonist, thirdGoal) } : rt,
+      ),
+      socialOffers: {
+        offers: [
+          ...accepted.socialOffers.offers,
+          {
+            id: accepted.socialOffers.nextOfferSequence,
+            initiatorId: "ada",
+            responderId: "zeke",
+            action: "comfort",
+            createdAtTick: accepted.clock.tick,
+            respondableAtTick: accepted.clock.tick + 1,
+            expiresAtTick: accepted.clock.tick + 4,
+            status: "pending",
+            resolvedAtTick: null,
+            reason: null,
+          },
+        ],
+        nextOfferSequence: accepted.socialOffers.nextOfferSequence + 1,
+      },
+    };
+    const result = tick(contested, 1);
+    const second = result.state.socialOffers.offers.find((o) => o.initiatorId === "ada")!;
+    expect(second.status).toBe("declined");
+    expect(second.reason).toBe("responderNotInterruptible");
+    expect(() => validateSimulationState(result.state)).not.toThrow();
+
+    // State side: a hand-forced double claim is rejected at tick()'s own input boundary, not
+    // only by the direct unit call in comfortParticipation.test.ts.
+    const doubleClaim: SimulationState = {
+      ...contested,
+      colonists: contested.colonists.map((rt) =>
+        rt.colonist.identity.id === "ada"
+          ? { ...rt, execution: beginExecution(taskDefinition("comfort"), thirdGoal, contested.clock.tick) }
+          : rt,
+      ),
+    };
+    expect(() => tick(doubleClaim, 1)).toThrow(/ADR-24 Invariant 12/);
+  });
+});
+
+describe("Stage 2 Slice 9 — Socializing ambient is reachable through real execution (validation plan §10)", () => {
+  const ambientOf = (state: SimulationState, id: string) =>
+    inspect(state).colonists.find((c) => c.identity.id === id)!.ambientState;
+
+  /**
+   * The accepted-offer fixture pattern from the Slice 5 block, rebuilt at this scope: a committed
+   * conversation goal toward zeke with its pending, respondable-next-tick offer. seed 7's first
+   * draw ≈ 0.0117 clears the acquainted acceptance band, so the tick under test genuinely begins
+   * the execution rather than hand-installing one.
+   */
+  function pendingConversationState(): SimulationState {
+    const freeStart = policy.workTicks + policy.restTicks;
+    const base = stateAtTickOfDay(freeStart, { social: { level: 0.45, ticksBelowLow: 0 }, purpose: { level: 0.5, ticksBelowLow: 0 } }, 7);
+    const tickNow = base.clock.tick;
+    const goal = commitGoal(
+      { source: "voluntary", tier: 5, key: "voluntary:social:conversation:zeke", baseUrgency: 0.2, relatedColonistId: "zeke", relatedSocialTaskId: "conversation" },
+      "test offer motivation",
+      tickNow,
+    );
+    const zekeGoal = commitGoal({ source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 }, "test fixture idle", tickNow);
+    const zekeRuntime: ColonistRuntime = {
+      colonist: withCurrentGoal(createColonist("zeke", "Zeke"), zekeGoal),
+      execution: beginExecution(taskDefinition("idlePresence"), zekeGoal, tickNow),
+      suspendedExecution: null,
+      ...createFreshMemoryBaselines(),
+    };
+    const withGoal = withRuntime(base, { colonist: withCurrentGoal(base.colonists[0]!.colonist, goal) });
+    return {
+      ...withGoal,
+      colonists: [...withGoal.colonists, zekeRuntime].sort((a, b) => (a.colonist.identity.id < b.colonist.identity.id ? -1 : 1)),
+      hasBootstrapped: true,
+      socialOffers: {
+        offers: [
+          {
+            id: 0,
+            initiatorId: "c1",
+            responderId: "zeke",
+            action: "conversation",
+            createdAtTick: tickNow,
+            respondableAtTick: tickNow + 1,
+            expiresAtTick: tickNow + 4,
+            status: "pending",
+            resolvedAtTick: null,
+            reason: null,
+          },
+        ],
+        nextOfferSequence: 1,
+      },
+    };
+  }
+
+  it("an accepted Conversation offer leaves the initiator reading as socializing in the inspector", () => {
+    const result = tick(pendingConversationState(), 1);
+    expect(result.state.socialOffers.offers[0]!.status).toBe("accepted");
+    expect(runtimeOf(result.state, "c1").execution?.taskId).toBe("conversation");
+    expect(ambientOf(result.state, "c1")).toBe("socializing");
+  });
+
+  it("an in-progress Shared Downtime execution reads as socializing after a real tick", () => {
+    const result = tick(socialExecutionState("sharedDowntime"), 1);
+    expect(runtimeOf(result.state, "c1").execution?.taskId).toBe("sharedDowntime");
+    expect(ambientOf(result.state, "c1")).toBe("socializing");
+  });
+
+  it("an executing comforter reads as socializing; the stressed recipient still reads as stressed", () => {
+    // ambientStateFor gives the stress overlay precedence over the task mapping, so Comfort's
+    // recipient — stressed by construction, that is Comfort's own eligibility rule — keeps
+    // reading "stressed". The comforter is the participant whose socializing state is observable.
+    const state = tick(pendingComfortState(), 1).state;
+    expect(runtimeOf(state, "c1").execution?.taskId).toBe("comfort");
+    expect(ambientOf(state, "c1")).toBe("socializing");
+    expect(ambientOf(state, "zeke")).toBe("stressed");
   });
 });
