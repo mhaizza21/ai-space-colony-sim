@@ -17,10 +17,9 @@ import { taskDefinition } from "./task/tasks.js";
 import { createDefaultPolicy } from "./world/policy.js";
 import { createWorld } from "./world/world.js";
 import { CONFLICT_TUNING, TASK_TUNING } from "./config/tuning.js";
-import { createFreshMemoryBaselines, tick, type ColonistRuntime, type SimulationState, type TickEvent } from "./simulation/tick.js";
+import { createFreshMemoryBaselines, tick, type ColonistRuntime, type SimulationState } from "./simulation/tick.js";
 import { verifyReplay } from "./replay/replay.js";
 import { createDecisionLog, createEventLog } from "./records/logs.js";
-import { createSocialOfferStore } from "./task/socialOffers.js";
 
 describe("deterministic run from seed", () => {
   it("the same seed and tick count produce an identical result, including the save string", () => {
@@ -393,201 +392,198 @@ describe("Stage 2 Slice 9 — multi-action fixed-seed replay integration (valida
     expect(verifySaveReplay(serialize(first.finalState), SEED).kind).toBe("match");
   });
 
-  it("a hand-authored scenario exercises Conversation, Shared Downtime, Shared Meal, accepted Comfort, and Confrontation in one continuous trace", () => {
-    // Organic seed-hunting across 2880-tick three-colonist runs does not reliably accept Comfort
-    // and begin Conversation in the same trace (seed 17 accepts Shared Downtime and fires
-    // Confrontation, but never an accepted Comfort). Same pattern Confrontation's own tests use:
-    // hand-author each action's known-good mid-state, tick through it, and accumulate one event
-    // trace that asserts each occurrence explicitly — not merely that offers were created.
-    const events: TickEvent[] = [];
-    const append = (state: SimulationState, n = 1): SimulationState => {
-      let next = state;
-      for (let i = 0; i < n; i++) {
-        const result = tick(next, 1);
-        events.push(...result.events);
-        next = result.state;
-      }
-      return next;
-    };
-
-    const clearToIdlePair = (state: SimulationState, stressLevel = 0): SimulationState => {
-      const t = state.clock.tick;
-      let next = state;
-      for (const id of ["c1", "zeke"] as const) {
-        const goal = commitGoal({ source: "voluntary", tier: 5, key: `voluntary:idle:${id}`, baseUrgency: 0.2 }, "fixture idle", t);
-        const colonist = runtimeOf(next, id).colonist;
-        const needs = {
-          ...createNeeds(),
-          social: { level: 0.45, ticksBelowLow: 0 },
-          purpose: { level: 0.5, ticksBelowLow: 0 },
-        } as ReturnType<typeof createNeeds>;
-        next = patchColonist(next, id, {
-          colonist: withStress(withNeeds(withCurrentGoal(colonist, goal), needs), { level: stressLevel }),
-          execution: beginExecution(taskDefinition("idlePresence"), goal, t),
-          suspendedExecution: null,
-          stressBaseline: stressLevel,
-          inConflictUntilTick: null,
-        });
-      }
-      return { ...next, socialOffers: createSocialOfferStore() };
-    };
-
-    const posePendingOffer = (
-      state: SimulationState,
+/**
+   * One hand-authored initial state, then a single continuous `run()` — one seed, one clock,
+   * one event/decision log. No mid-run rewrites. Starts a few ticks before free→work so the
+   * parallel pending offers (distinct responders) accept during free time, Shared Meal is the
+   * eating overlay already in progress, and Confrontation can fire in the same trace once the
+   * hostile pair lands on the shared workstation module at work start.
+   *
+   * Offer id order is Comfort → Conversation → Shared Downtime: ascending-id acceptance draws
+   * consume the PRNG in that order. Seed 1's first three draws sit under Comfort's acquainted
+   * band (0.65) and Conversation/Shared-Downtime's (0.55); putting Comfort last (as id 2) would
+   * land on a failing draw for several nearby seeds including 7.
+   */
+  function continuousMultiActionInitial(seed: number): SimulationState {
+    const policy = createDefaultPolicy();
+    // Leave a short free window for offers to accept, then cross into work in the same run.
+    const t = FREE_START + policy.freeTicks - 4;
+    const socialGoal = (
+      initiatorId: string,
       action: "conversation" | "sharedDowntime" | "comfort",
-      responderStress = 0,
-    ): SimulationState => {
-      const t = state.clock.tick;
-      const goal = commitGoal(
+      responderId: string,
+    ) =>
+      commitGoal(
         {
           source: "voluntary",
           tier: 5,
-          key: `voluntary:social:${action}:zeke`,
+          key: `voluntary:social:${action}:${responderId}`,
           baseUrgency: 0.2,
-          relatedColonistId: "zeke",
+          relatedColonistId: responderId,
           relatedSocialTaskId: action,
         },
-        `multi-action ${action}`,
+        `${initiatorId} ${action}`,
         t,
       );
-      let next = clearToIdlePair(state, responderStress);
-      next = patchColonist(next, "c1", {
-        colonist: withCurrentGoal(runtimeOf(next, "c1").colonist, goal),
-        execution: null,
-      });
+    const idle = (id: string) =>
+      commitGoal({ source: "voluntary", tier: 5, key: `voluntary:idle:${id}`, baseUrgency: 0.2 }, "idle", t);
+
+    const mk = (
+      id: string,
+      name: string,
+      goal: ReturnType<typeof commitGoal>,
+      opts: { stress?: number; executionTask?: "eatAtFoodStation" | "idlePresence" | null; hunger?: number } = {},
+    ): ColonistRuntime => {
+      const stress = opts.stress ?? 0;
+      const hunger = opts.hunger ?? 1;
+      const needs = {
+        ...createNeeds(),
+        hunger: { level: hunger, ticksBelowLow: hunger < 0.5 ? 20 : 0 },
+        social: { level: 0.45, ticksBelowLow: 0 },
+        purpose: { level: 0.5, ticksBelowLow: 0 },
+      } as ReturnType<typeof createNeeds>;
+      const colonist = withStress(withNeeds(withCurrentGoal(createColonist(id, name), goal), needs), { level: stress });
+      const execution =
+        opts.executionTask === undefined || opts.executionTask === null
+          ? null
+          : beginExecution(taskDefinition(opts.executionTask), goal, t);
       return {
-        ...next,
-        prng: createPrng(7), // seed 7's first draw accepts Comfort's acquainted band and Conversation's
-        socialOffers: {
-          offers: [
-            {
-              id: 0,
-              initiatorId: "c1",
-              responderId: "zeke",
-              action,
-              createdAtTick: t,
-              respondableAtTick: t + 1,
-              expiresAtTick: t + 4,
-              status: "pending",
-              resolvedAtTick: null,
-              reason: null,
-            },
-          ],
-          nextOfferSequence: 1,
-        },
+        colonist,
+        execution,
+        suspendedExecution: null,
+        ...createFreshMemoryBaselines(),
+        stressBaseline: stress,
       };
     };
 
-    let state = freeStartPair(7);
+    const adaConv = socialGoal("ada", "conversation", "maya");
+    const boDown = socialGoal("bo", "sharedDowntime", "zeke");
+    const novaComfort = socialGoal("nova", "comfort", "sam");
+    const mayaEat = commitGoal(
+      { source: "criticalNeed", tier: 1, key: "criticalNeed:hunger", baseUrgency: 1, relatedNeed: "hunger" },
+      "shared meal eat",
+      t,
+    );
 
-    // --- Conversation: accept + begin ---
-    state = append(posePendingOffer(state, "conversation"), 1);
-    expect(state.socialOffers.offers[0]!.status).toBe("accepted");
-    expect(state.socialOffers.offers[0]!.action).toBe("conversation");
-    expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "conversation")).toBe(true);
+    // Ada/Bo start high-stress Hostile so the free→work handoff still clears the combined-stress
+    // bar once both are on workAtWorkstation (moduleId "workstation").
+    const colonists = [
+      mk("ada", "Ada", adaConv, { stress: 0.85, executionTask: null }),
+      mk("bo", "Bo", boDown, { stress: 0.85, executionTask: null }),
+      mk("maya", "Maya", mayaEat, { executionTask: "eatAtFoodStation", hunger: 0.35 }),
+      mk("nova", "Nova", novaComfort, { executionTask: null }),
+      mk("sam", "Sam", idle("sam"), { stress: 0.9, executionTask: "idlePresence" }),
+      mk("zeke", "Zeke", idle("zeke"), { executionTask: "idlePresence" }),
+    ].sort((a, b) => (a.colonist.identity.id < b.colonist.identity.id ? -1 : 1));
 
-    // --- Shared Downtime: accept + begin ---
-    state = append(posePendingOffer(state, "sharedDowntime"), 1);
-    expect(state.socialOffers.offers[0]!.status).toBe("accepted");
-    expect(state.socialOffers.offers[0]!.action).toBe("sharedDowntime");
-    expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "sharedDowntime")).toBe(true);
+    const relationships = applyInteraction(createRelationshipStore(), {
+      colonistAId: "ada",
+      colonistBId: "bo",
+      tick: 0,
+      changeSource: "directConflict",
+      initiatorId: null,
+      responderId: null,
+      aTowardBDelta: -60,
+      bTowardADelta: -60,
+    }).store;
 
-    // --- Shared Meal: eating with non-hostile company applies the overlay ---
-    {
-      const t = state.clock.tick;
-      const eatGoal = commitGoal(
-        { source: "criticalNeed", tier: 1, key: "criticalNeed:hunger", baseUrgency: 1, relatedNeed: "hunger" },
-        "multi-action shared meal",
-        t,
-      );
-      state = clearToIdlePair(state);
-      state = patchColonist(state, "c1", {
-        colonist: withNeeds(withCurrentGoal(runtimeOf(state, "c1").colonist, eatGoal), {
-          ...createNeeds(),
-          hunger: { level: 0.35, ticksBelowLow: 10 },
-          social: { level: 0.45, ticksBelowLow: 0 },
-          purpose: { level: 0.5, ticksBelowLow: 0 },
-        } as ReturnType<typeof createNeeds>),
-        execution: beginExecution(taskDefinition("eatAtFoodStation"), eatGoal, t),
-      });
-      state = { ...state, world: createWorld(), relationships: createRelationshipStore() };
-      const socialBefore = runtimeOf(state, "c1").colonist.needs.social.level;
-      const affinityBefore = perspective(state.relationships, "c1", "zeke").affinity;
-      state = append(state, 1);
-      expect(events.some((e) => e.kind === "executionProgressed" && e.taskId === "eatAtFoodStation")).toBe(true);
-      // Shared Meal is an overlay on eating — no dedicated event — so assert its own consequences.
-      // Social also decays in Phase 3, so the overlay is the net lift above that decay; affinity is
-      // exact because the shared-meal pair is excluded from atrophy this tick.
-      expect(runtimeOf(state, "c1").colonist.needs.social.level).toBeGreaterThan(socialBefore);
-      expect(perspective(state.relationships, "c1", "zeke").affinity - affinityBefore).toBeCloseTo(
-        TASK_TUNING.sharedMealAffinityDeltaPerTick,
-        9,
-      );
-    }
-
-    // --- Comfort: accept + begin (stressed responder required) ---
-    state = append(posePendingOffer(state, "comfort", 0.9), 1);
-    expect(state.socialOffers.offers[0]!.status).toBe("accepted");
-    expect(state.socialOffers.offers[0]!.action).toBe("comfort");
-    expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "comfort")).toBe(true);
-
-    // --- Confrontation: workstation pair + hostile affinity, seed-hunt until fire (seed 7 known) ---
-    {
-      const workGoal = (id: string) =>
-        commitGoal({ source: "shiftAssignment", tier: 3, key: `shiftAssignment:work:${id}`, baseUrgency: 0.5 }, "work", 0);
-      const withWork = (id: string, name: string): ColonistRuntime => {
-        const goal = workGoal(id);
-        return {
-          colonist: {
-            ...withCurrentGoal(withNeeds(createColonist(id, name), createNeeds()), goal),
-            stress: { level: 0.7 },
+    return {
+      clock: advance(createClock(), t),
+      world: createWorld(),
+      policy,
+      colonists,
+      prng: createPrng(seed),
+      hasBootstrapped: true,
+      eventLog: createEventLog(),
+      decisionLog: createDecisionLog(),
+      relationships,
+      socialOffers: {
+        offers: [
+          {
+            id: 0,
+            initiatorId: "nova",
+            responderId: "sam",
+            action: "comfort",
+            createdAtTick: t,
+            respondableAtTick: t + 1,
+            expiresAtTick: t + 8,
+            status: "pending",
+            resolvedAtTick: null,
+            reason: null,
           },
-          execution: beginExecution(taskDefinition("workAtWorkstation"), goal, 0),
-          suspendedExecution: null,
-          ...createFreshMemoryBaselines(),
-        };
-      };
-      const relationships = applyInteraction(createRelationshipStore(), {
-        colonistAId: "c1",
-        colonistBId: "zeke",
-        tick: 0,
-        changeSource: "directConflict",
-        initiatorId: null,
-        responderId: null,
-        aTowardBDelta: -50,
-        bTowardADelta: -50,
-      }).store;
-      // Seed 7 fires under CONFLICT_TUNING.conflictFireProbability (probed; same hunt pattern as
-      // tick.test.ts's Confrontation block). Keep the structural floor explicit.
-      expect(CONFLICT_TUNING.conflictFireProbability).toBeGreaterThan(0);
-      const confrontationState: SimulationState = {
-        clock: createClock(),
-        world: createWorld(),
-        policy: createDefaultPolicy(),
-        colonists: [withWork("c1", "Maya"), withWork("zeke", "Zeke")].sort((a, b) =>
-          a.colonist.identity.id < b.colonist.identity.id ? -1 : 1,
-        ),
-        prng: createPrng(7),
-        hasBootstrapped: true,
-        eventLog: createEventLog(),
-        decisionLog: createDecisionLog(),
-        relationships,
-        socialOffers: createSocialOfferStore(),
-      };
-      state = append(confrontationState, 1);
-      expect(events.some((e) => e.kind === "confrontationOccurred")).toBe(true);
-    }
+          {
+            id: 1,
+            initiatorId: "ada",
+            responderId: "maya",
+            action: "conversation",
+            createdAtTick: t,
+            respondableAtTick: t + 1,
+            expiresAtTick: t + 8,
+            status: "pending",
+            resolvedAtTick: null,
+            reason: null,
+          },
+          {
+            id: 2,
+            initiatorId: "bo",
+            responderId: "zeke",
+            action: "sharedDowntime",
+            createdAtTick: t,
+            respondableAtTick: t + 1,
+            expiresAtTick: t + 8,
+            status: "pending",
+            resolvedAtTick: null,
+            reason: null,
+          },
+        ],
+        nextOfferSequence: 3,
+      },
+    };
+  }
 
-    // Explicit occurrence pins for all five Stage 2 actions in this one accumulated trace.
+  it("one continuous fixed-seed run exercises Conversation, Shared Downtime, Shared Meal, accepted Comfort, and Confrontation", () => {
+    // Seed 1: first three draws clear Comfort (0.65) and Conversation/Shared-Downtime (0.55);
+    // the same continuous free→work handoff also fires Confrontation for the Hostile ada/bo pair.
+    const MULTI_SEED = 1;
+    const TOTAL = 4 + 240; // remaining free window in the fixture + work-period runway
+    const start = continuousMultiActionInitial(MULTI_SEED);
+
+    const first = run(start, TOTAL);
+    const second = run(continuousMultiActionInitial(MULTI_SEED), TOTAL);
+    const { events } = first;
+
+    expect(first.events).toEqual(second.events);
+    expect(first.finalState.eventLog).toEqual(second.finalState.eventLog);
+    expect(first.finalState.decisionLog).toEqual(second.finalState.decisionLog);
+    expect(verifyReplay(start, first.finalState).kind).toBe("match");
+
+    const acceptedById = new Map<number, string>();
+    // Initial offers are posed pending (ids 0/1/2); resolve events carry id+status only, so map
+    // back through the initial store before retention can evict the resolved rows.
+    const initialActions = new Map(start.socialOffers.offers.map((o) => [o.id, o.action]));
+    for (const e of events) {
+      if (e.kind === "socialOfferResolved" && e.status === "accepted") {
+        const action = initialActions.get(e.offerId);
+        if (action !== undefined) acceptedById.set(e.offerId, action);
+      }
+    }
+    expect([...acceptedById.values()].sort()).toEqual(["comfort", "conversation", "sharedDowntime"]);
+
     expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "conversation")).toBe(true);
     expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "sharedDowntime")).toBe(true);
-    expect(events.some((e) => e.kind === "executionProgressed" && e.taskId === "eatAtFoodStation")).toBe(true);
     expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "comfort")).toBe(true);
-    expect(events.some((e) => e.kind === "confrontationOccurred")).toBe(true);
 
-    // Assist stays unreachable by Human ruling (comfort-assist-protocol §15).
+    expect(events.some((e) => e.kind === "executionProgressed" && e.taskId === "eatAtFoodStation")).toBe(true);
+    const afterOne = tick(start, 1).state;
+    expect(perspective(afterOne.relationships, "maya", "ada").affinity).toBeCloseTo(
+      TASK_TUNING.sharedMealAffinityDeltaPerTick,
+      9,
+    );
+
+    expect(events.some((e) => e.kind === "confrontationOccurred")).toBe(true);
+    expect(CONFLICT_TUNING.conflictFireProbability).toBeGreaterThan(0);
+
     expect(events.some((e) => e.kind === "executionBegun" && e.taskId === "assist")).toBe(false);
-    const createdActions = events.flatMap((e) => (e.kind === "socialOfferCreated" ? [e.action as string] : []));
-    expect(createdActions).not.toContain("assist");
+    expect([...acceptedById.values()] as string[]).not.toContain("assist");
   });
 });
