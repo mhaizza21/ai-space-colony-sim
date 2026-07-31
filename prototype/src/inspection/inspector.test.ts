@@ -252,9 +252,15 @@ describe("detached snapshots — mutating a result never aliases back into the s
       expect(state.colonists[0]!.execution!.elapsedTicks).toBe(7);
       expect(state.colonists[0]!.colonist.currentGoal!.key).toBe("voluntary:social:comfort:zeke");
     } else {
+      // Same mutate-then-reassert pattern as mid-Comfort: tamper with every inConflict-bearing
+      // field the summary exposes, then prove the live state and a fresh inspect are untouched.
+      (summary.colonists[0] as { ambientState: string }).ambientState = "tampered";
+      (summary.colonists[0]!.identity as { name: string }).name = "tampered";
       expect(state.colonists[0]!.inConflictUntilTick).toBe(20);
+      expect(state.colonists[0]!.colonist.identity.name).toBe("Maya");
     }
     expect(inspect(state).colonists[0]!.ambientState).toBe(expectedAmbient); // unchanged by the tampering above
+    expect(inspect(state).colonists[0]!.identity.name).toBe("Maya");
   });
 
   it("mutating the returned PRNG summary does not alter state.prng", () => {

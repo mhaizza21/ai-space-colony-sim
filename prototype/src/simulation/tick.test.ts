@@ -1825,13 +1825,9 @@ describe("Stage 2 Slice 9 — accepted Comfort real-run consequences (validation
   });
 
   it("credits Social to BOTH participants per Comfort's own D7 table, and never credits Purpose", () => {
-    // NOTE (validation-plan discrepancy, surfaced not silently resolved): §10's Comfort bullet
-    // reads "credits no Social-need restoration to either participant". That is the
-    // comfort-assist-protocol v0.4.0 §9 **Non-effects** row, which governs declined/cancelled/
-    // expired offers. For an ACCEPTED Comfort the same §9 table's Social row is
-    // `comfortSocialRestorePerTick`, initiator and responder, "Both" — and that is what shipped
-    // (tick.ts Phase 6). This test pins the shipped, Human-approved behavior in both directions;
-    // the plan bullet is reported as a finding rather than asserted as written.
+    // comfort-assist-protocol v0.4.0 §9 / stage-2-validation-plan.md v0.3.1 §10: an accepted
+    // Comfort credits comfortSocialRestorePerTick to both participants; the "no Social" sentence
+    // in earlier plan drafts was §9's Non-effects row (declined/cancelled/expired only).
     const social = (state: SimulationState, id: string) => runtimeOf(state, id).colonist.needs.social.level;
     const purpose = (state: SimulationState, id: string) => runtimeOf(state, id).colonist.needs.purpose.level;
 
@@ -1891,6 +1887,24 @@ describe("Stage 2 Slice 9 — accepted Comfort real-run consequences (validation
     expect(perspective(steps[steps.length - 1]!.state.relationships, "zeke", "c1").affinity).toBeGreaterThan(0);
     expect(affinity).toBeLessThan(MEMORY_TUNING.relationshipChangeSignificance);
     expect(steps.some((s) => s.events.some((e) => e.kind === "memoryFormed" && e.memoryType === "relational"))).toBe(false);
+  });
+
+  it("completes the accepted Comfort at the free-period boundary with a completion event and cleared comfort goal/execution", () => {
+    // Park an already-accepted Comfort on the last free tick so hunger decay cannot preempt it,
+    // then cross the free→work boundary and assert completion — not merely that comfort stayed
+    // active for most of a long free-period sample.
+    const accepted = tick(pendingComfortState(), 1).state;
+    expect(runtimeOf(accepted, "c1").execution?.taskId).toBe("comfort");
+    const lastFreeTick = policy.workTicks + policy.restTicks + policy.freeTicks - 1;
+    const poised: SimulationState = { ...accepted, clock: advance(createClock(), lastFreeTick) };
+    const result = tick(poised, 1);
+    expect(result.events).toContainEqual({
+      kind: "completion",
+      goalKey: "voluntary:social:comfort:zeke",
+      taskId: "comfort",
+    });
+    expect(runtimeOf(result.state, "c1").execution?.taskId).not.toBe("comfort");
+    expect(runtimeOf(result.state, "c1").colonist.currentGoal?.key).not.toBe("voluntary:social:comfort:zeke");
   });
 
   it("rejects a second Comfort claim on the same recipient through a real tick (ADR-24 Invariant 12)", () => {
