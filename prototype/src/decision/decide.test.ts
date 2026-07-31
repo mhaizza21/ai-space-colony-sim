@@ -15,6 +15,10 @@ import { createNeeds } from "../colonist/needs.js";
 import { MEMORY_TUNING } from "../config/tuning.js";
 import { influence, type MemoryEntry, type MemoryPool } from "../colonist/memory.js";
 import { applyInteraction, createRelationshipStore, perspective } from "../colonist/relationships.js";
+import { createDecisionLog, createEventLog } from "../records/logs.js";
+import { createSocialOfferStore } from "../task/socialOffers.js";
+import { createFreshMemoryBaselines, type SimulationState } from "../simulation/tick.js";
+import { run } from "../simulation/run.js";
 
 const survival: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:z", baseUrgency: 999 };
 const survival2: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:a", baseUrgency: 1 };
@@ -425,11 +429,10 @@ describe("Stage 2 Slice 9 — a formed memory flips which candidate a later deci
     expect(value).toBeLessThan(entry!.impact);
   });
 
-  it("relational memories are not read by the weight family at all — only deprivation memories tilt a candidate", () => {
-    // Recorded because §3's own wording asks for a relational-memory-driven flip: memoryContributions
-    // filters on `type === "deprivation"` matching the candidate's relatedNeed, so a relational
-    // memory cannot reach candidate weighting without new production code — which this test-only
-    // slice does not add. Surfaced as a finding, pinned here so a later slice cannot drift silently.
+  it("hand-authored relational memories are not read by the weight family at all — only deprivation memories tilt a candidate", () => {
+    // Unit-level pin of memoryContributions' type filter. The separately named real-tick gap pin
+    // below forms a relational memory the simulation actually produced; this one only proves the
+    // filter itself rejects the relational shape.
     const relationalPool: MemoryPool = [
       { id: 0, type: "relational", context: { otherId: "zeke", direction: "negative" }, formedAtTick: 0, impact: 1 },
     ];
@@ -445,6 +448,70 @@ describe("Stage 2 Slice 9 — a formed memory flips which candidate a later deci
       expect(weight.memoryContributions).toEqual([]);
       expect(weight.memory).toBe(1);
     }
+  });
+});
+
+describe("Stage 2 Slice 9 — a relational memory formed via a real tick produces no candidate-selection change", () => {
+  // §3 step 4 / §10 gap pin: memoryContributions reads deprivation memories only. Form a real
+  // relational memory through the same atrophy path tick.test.ts already uses, then show that
+  // carrying it into a later decision changes neither the selected candidate nor any memory tilt.
+  const SIGNIFICANT_TICKS = 800; // atrophyPerTick 0.02 × 800 ≫ relationshipChangeSignificance 15
+
+  function atrophyStateThatFormsRelationalMemory(): SimulationState {
+    const colonist = withNeeds(createColonist("c1", "Maya"), createNeeds());
+    const relationships = applyInteraction(createRelationshipStore(), {
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      tick: 0,
+      changeSource: "sharedTaskCompletion",
+      initiatorId: "c1",
+      responderId: "zeke",
+      aTowardBDelta: 50,
+      bTowardADelta: 50,
+    }).store;
+    return {
+      clock: createClock(),
+      world: createWorld(),
+      policy: createDefaultPolicy(),
+      colonists: [{ colonist, execution: null, suspendedExecution: null, ...createFreshMemoryBaselines() }],
+      prng: createPrng(1),
+      hasBootstrapped: false,
+      eventLog: createEventLog(),
+      decisionLog: createDecisionLog(),
+      relationships,
+      socialOffers: createSocialOfferStore(),
+    };
+  }
+
+  it("a relational memory formed by real ticks does not flip which candidate a later decision selects", () => {
+    const formed = run(atrophyStateThatFormsRelationalMemory(), SIGNIFICANT_TICKS);
+    expect(formed.events.some((e) => e.kind === "memoryFormed" && e.memoryType === "relational")).toBe(true);
+    const relationalMemories = formed.finalState.colonists[0]!.colonist.memory.filter((e) => e.type === "relational");
+    expect(relationalMemories.length).toBeGreaterThan(0);
+
+    const decisionTick = formed.finalState.clock.tick;
+    const candidates = [lowA, lowB];
+    const withoutMemory = decideFromCandidates(candidates, createColonist("c1", "Maya"), createPrng(13), decisionTick, workSnapshot);
+    const withRelationalMemory = decideFromCandidates(
+      candidates,
+      withMemory(createColonist("c1", "Maya"), relationalMemories),
+      createPrng(13),
+      decisionTick,
+      workSnapshot,
+    );
+
+    expect(withoutMemory.kind).toBe("commit");
+    expect(withRelationalMemory.kind).toBe("commit");
+    if (withoutMemory.kind !== "commit" || withRelationalMemory.kind !== "commit") return;
+    // Same seed, same candidates, same draw — and the same winning key. The formed relational
+    // memory is present and still inside its influence window, but contributes nothing.
+    expect(withRelationalMemory.goal.key).toBe(withoutMemory.goal.key);
+    expect(withRelationalMemory.draws.map((d) => d.value)).toEqual(withoutMemory.draws.map((d) => d.value));
+    for (const weight of withRelationalMemory.composedWeights) {
+      expect(weight.memoryContributions).toEqual([]);
+      expect(weight.memory).toBe(1);
+    }
+    expect(influence(relationalMemories[0]!, decisionTick)).toBeGreaterThan(0);
   });
 });
 
