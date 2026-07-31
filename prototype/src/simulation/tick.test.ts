@@ -1847,12 +1847,15 @@ describe("Stage 2 Slice 9 — accepted Comfort real-run consequences (validation
       const withoutComfort = social(afterDeclined.state, id) - social(declined, id);
       expect(withoutComfort).toBeLessThan(0); // decay alone
       expect(withComfort - withoutComfort).toBeCloseTo(TASK_TUNING.comfortSocialRestorePerTick, 9);
-      // Purpose is never credited by any social action (ADR-17 D6 / ADR-18 D7 distinctness).
-      expect(purpose(afterAccepted.state, id)).toBeLessThan(purpose(accepted, id));
+      // Purpose is never credited (ADR-17 D6 / ADR-18 D7): the accepted−declined delta is ~0,
+      // matching the Social pattern — not merely "net Purpose fell" (which decay alone satisfies).
+      const purposeWith = purpose(afterAccepted.state, id) - purpose(accepted, id);
+      const purposeWithout = purpose(afterDeclined.state, id) - purpose(declined, id);
+      expect(purposeWith - purposeWithout).toBeCloseTo(0, 9);
     }
   });
 
-  it("a declined Comfort credits no Social and applies no positive affinity (§9 non-effects)", () => {
+  it("a declined Comfort credits no Social and applies decline friction (§9 non-effects / declineWithFriction)", () => {
     // seed 1's first draw ≈ 0.6271 — below Conversation's 0.55 band it would decline; against
     // Comfort's higher acquainted band (0.65) it still lands under, so the decline is forced by
     // making the responder ineligible instead: an unstressed zeke is not a valid Comfort target.
@@ -1868,6 +1871,69 @@ describe("Stage 2 Slice 9 — accepted Comfort real-run consequences (validation
     // Decline friction only — never Comfort's positive mutualSupportCrisis delta.
     expect(perspective(result.state.relationships, "c1", "zeke").affinity).toBeLessThan(0);
     expect(perspective(result.state.relationships, "zeke", "c1").affinity).toBeLessThan(0);
+  });
+
+  it("a cancelled Comfort restores no Social and moves affinity zero (initiatorUnavailable)", () => {
+    // Distinct from declineWithFriction: tick.ts's cancelled path never calls applyInteraction.
+    const base = pendingComfortState(7);
+    const withoutGoal = {
+      ...base,
+      colonists: base.colonists.map((rt) =>
+        rt.colonist.identity.id === "c1" ? { ...rt, colonist: withCurrentGoal(rt.colonist, null) } : rt,
+      ),
+    };
+    const socialBefore = {
+      c1: runtimeOf(withoutGoal, "c1").colonist.needs.social.level,
+      zeke: runtimeOf(withoutGoal, "zeke").colonist.needs.social.level,
+    };
+    const affinityBefore = {
+      c1: perspective(withoutGoal.relationships, "c1", "zeke").affinity,
+      zeke: perspective(withoutGoal.relationships, "zeke", "c1").affinity,
+    };
+    const result = tick(withoutGoal, 1);
+    const offer = result.state.socialOffers.offers[0]!;
+    expect(offer.status).toBe("cancelled");
+    expect(offer.reason).toBe("initiatorUnavailable");
+    expect(runtimeOf(result.state, "c1").execution?.taskId).not.toBe("comfort");
+    expect(runtimeOf(result.state, "c1").colonist.needs.social.level).toBeLessThan(socialBefore.c1);
+    expect(runtimeOf(result.state, "zeke").colonist.needs.social.level).toBeLessThan(socialBefore.zeke);
+    expect(perspective(result.state.relationships, "c1", "zeke").affinity).toBe(affinityBefore.c1);
+    expect(perspective(result.state.relationships, "zeke", "c1").affinity).toBe(affinityBefore.zeke);
+  });
+
+  it("an expired Comfort restores no Social and moves affinity zero (timeout)", () => {
+    // Distinct from declineWithFriction: tick.ts's expired path never calls applyInteraction.
+    const base = pendingComfortState(7);
+    const suspended = suspendGoal(base.colonists.find((r) => r.colonist.identity.id === "c1")!.colonist.currentGoal!);
+    const state: SimulationState = {
+      ...base,
+      colonists: base.colonists.map((rt) =>
+        rt.colonist.identity.id === "c1"
+          ? { ...rt, colonist: withSuspendedGoal(withCurrentGoal(rt.colonist, null), suspended) }
+          : rt,
+      ),
+      socialOffers: {
+        offers: [{ ...base.socialOffers.offers[0]!, expiresAtTick: base.clock.tick + 1 }],
+        nextOfferSequence: 1,
+      },
+    };
+    const socialBefore = {
+      c1: runtimeOf(state, "c1").colonist.needs.social.level,
+      zeke: runtimeOf(state, "zeke").colonist.needs.social.level,
+    };
+    const affinityBefore = {
+      c1: perspective(state.relationships, "c1", "zeke").affinity,
+      zeke: perspective(state.relationships, "zeke", "c1").affinity,
+    };
+    const result = tick(state, 1);
+    const offer = result.state.socialOffers.offers[0]!;
+    expect(offer.status).toBe("expired");
+    expect(offer.reason).toBe("timeout");
+    expect(runtimeOf(result.state, "c1").colonist.suspendedGoal).toBeNull();
+    expect(runtimeOf(result.state, "c1").colonist.needs.social.level).toBeLessThan(socialBefore.c1);
+    expect(runtimeOf(result.state, "zeke").colonist.needs.social.level).toBeLessThan(socialBefore.zeke);
+    expect(perspective(result.state.relationships, "c1", "zeke").affinity).toBe(affinityBefore.c1);
+    expect(perspective(result.state.relationships, "zeke", "c1").affinity).toBe(affinityBefore.zeke);
   });
 
   it("accumulates positive mutualSupportCrisis affinity but cannot reach ADR-16 relational-memory significance on its provisional tuning", () => {

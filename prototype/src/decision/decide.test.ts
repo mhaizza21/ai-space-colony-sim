@@ -12,13 +12,14 @@ import { buildSnapshot, type WorldSnapshot } from "../world/snapshot.js";
 import type { GoalCandidate } from "./goals.js";
 import { decideFromCandidates, decideNext } from "./decide.js";
 import { createNeeds } from "../colonist/needs.js";
-import { MEMORY_TUNING } from "../config/tuning.js";
-import { influence, type MemoryEntry, type MemoryPool } from "../colonist/memory.js";
+import { MEMORY_TUNING, WEIGHT_TUNING } from "../config/tuning.js";
+import { influence, type MemoryPool } from "../colonist/memory.js";
 import { applyInteraction, createRelationshipStore, perspective } from "../colonist/relationships.js";
 import { createDecisionLog, createEventLog } from "../records/logs.js";
 import { createSocialOfferStore } from "../task/socialOffers.js";
 import { createFreshMemoryBaselines, type SimulationState } from "../simulation/tick.js";
-import { run } from "../simulation/run.js";
+import { createInitialState, run } from "../simulation/run.js";
+import { applyMemoryContributions, memoryContributions } from "./weights.js";
 
 const survival: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:z", baseUrgency: 999 };
 const survival2: GoalCandidate = { source: "survivalCondition", tier: 1, key: "survivalCondition:a", baseUrgency: 1 };
@@ -298,6 +299,9 @@ describe("decideNext forwards the colonist's traits to candidate generation (Cop
 // in, so the choice of seed explains itself instead of being an unexplained constant.
 
 describe("Stage 2 Slice 9 — relationship state flips which candidate a later decision selects", () => {
+  // Codex warning (PR #162): this block pins the flip at decideFromCandidates (weight-composition
+  // helper), not a full decideNext/tick scenario. Left at this layer deliberately — escalating to
+  // decideNext/tick is a Planner open question, not an Implementer unilateral change.
   const freeSnapshot: WorldSnapshot = buildSnapshot(advance(createClock(), 960), createDefaultPolicy(), createWorld());
   const untraitedColonist = createColonist("c1", "Maya"); // no traits, no stress: the relationship family is the only live tilt
   const idleCandidate: GoalCandidate = { source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 };
@@ -370,63 +374,67 @@ describe("Stage 2 Slice 9 — relationship state flips which candidate a later d
 });
 
 describe("Stage 2 Slice 9 — a formed memory flips which candidate a later decision selects", () => {
-  const untraitedColonist = createColonist("c1", "Maya");
-  const decisionTick = 100; // "later": the memories below formed at tick 0
+  // §3 step 4 (v0.3.1): memoryContributions reads deprivation memories only, so the approved
+  // flip uses a deprivation memory formed via a real tick — not a hand-authored pool. The
+  // hunger/rest lowNeed pair is the plan's own candidate shape (relatedNeed-bearing).
 
-  /** Hand-authored deprivation memories, the only memory type the weight family reads. */
-  function deprivationPool(needId: "hunger" | "rest"): MemoryPool {
-    return [0, 1].map<MemoryEntry>((id) => ({
-      id,
-      type: "deprivation",
-      context: { needId },
-      formedAtTick: 0,
-      impact: 1,
-    }));
-  }
+  it("a deprivation memoryFormed via real ticks flips a later hunger/rest decision", () => {
+    // Same sustained-hunger path run.test.ts already uses: broken food station, hunger decays
+    // past significance, memoryFormed fires naturally.
+    const initial = createInitialState(1, "c1", "Maya");
+    const broken = { ...initial, world: setModuleFunctional(initial.world, "foodStation", false) };
+    const formed = run(broken, 1000);
+    expect(formed.events.some((e) => e.kind === "memoryFormed" && e.memoryType === "deprivation" && e.needId === "hunger")).toBe(
+      true,
+    );
+    const hungerMemories = formed.finalState.colonists[0]!.colonist.memory.filter(
+      (e) => e.type === "deprivation" && e.context.needId === "hunger",
+    );
+    expect(hungerMemories.length).toBeGreaterThan(0);
 
-  it("with no memory the rest candidate wins; the same decision with hunger memories selects hunger instead", () => {
-    // memoryContributions only matches a candidate's own relatedNeed, so a hunger memory lifts
-    // lowA and leaves lowB untouched. Seed 13's draw sits between the no-memory share (0.5) and
-    // the capped-memory share (0.525/0.825) — the window where the two pools disagree.
-    const drawValue = next(createPrng(13)).value;
-    expect(drawValue).toBeGreaterThan(0.5);
-    expect(drawValue).toBeLessThan(0.525 / 0.825);
+    // "Later" than formation, still inside the fade window (plan §3 step 4).
+    const decisionTick = formed.finalState.clock.tick + 100;
+    for (const entry of hungerMemories) {
+      expect(influence(entry, decisionTick)).toBeGreaterThan(0);
+    }
+
+    // Equal base urgencies — the deprivation tilt alone must move the selection. Compute the
+    // flip window from the real memories' influence rather than a hand-authored impact.
+    const hungerTilt = applyMemoryContributions(lowA.baseUrgency, memoryContributions(hungerMemories, lowA, decisionTick));
+    const restTilt = applyMemoryContributions(lowB.baseUrgency, memoryContributions(hungerMemories, lowB, decisionTick));
+    expect(restTilt).toBeCloseTo(lowB.baseUrgency, 12); // hunger memories do not touch rest
+    expect(hungerTilt).toBeGreaterThan(lowA.baseUrgency);
+    const hungerShareWithMemory = hungerTilt / (hungerTilt + restTilt);
+    expect(hungerShareWithMemory).toBeGreaterThan(0.5);
+
+    // Pick a seed whose single draw sits in (0.5, hungerShareWithMemory) — without-memory picks
+    // rest (lowB), with-memory picks hunger (lowA). Magnitude depends on the real formation.
+    let flipSeed = -1;
+    for (let s = 1; s <= 200 && flipSeed < 0; s++) {
+      const drawValue = next(createPrng(s)).value;
+      if (drawValue > 0.5 && drawValue < hungerShareWithMemory) flipSeed = s;
+    }
+    expect(flipSeed).toBeGreaterThan(0);
+    expect(WEIGHT_TUNING.memoryWeightTiltScale).toBeGreaterThan(0);
 
     const candidates = [lowA, lowB];
-    const withoutMemory = decideFromCandidates(candidates, untraitedColonist, createPrng(13), decisionTick, workSnapshot);
+    const bare = createColonist("c1", "Maya");
+    const withoutMemory = decideFromCandidates(candidates, bare, createPrng(flipSeed), decisionTick, workSnapshot);
     const withHungerMemory = decideFromCandidates(
       candidates,
-      withMemory(untraitedColonist, deprivationPool("hunger")),
-      createPrng(13),
-      decisionTick,
-      workSnapshot,
-    );
-    const withRestMemory = decideFromCandidates(
-      candidates,
-      withMemory(untraitedColonist, deprivationPool("rest")),
-      createPrng(13),
+      withMemory(bare, hungerMemories),
+      createPrng(flipSeed),
       decisionTick,
       workSnapshot,
     );
 
-    if (withoutMemory.kind !== "commit" || withHungerMemory.kind !== "commit" || withRestMemory.kind !== "commit") {
-      throw new Error("expected commits");
-    }
+    expect(withoutMemory.kind).toBe("commit");
+    expect(withHungerMemory.kind).toBe("commit");
+    if (withoutMemory.kind !== "commit" || withHungerMemory.kind !== "commit") return;
     expect(withoutMemory.goal.key).toBe(lowB.key);
     expect(withHungerMemory.goal.key).toBe(lowA.key); // the flip
-    expect(withRestMemory.goal.key).toBe(lowB.key); // the mirrored memory does not flip it back
     expect(withHungerMemory.draws.map((d) => d.value)).toEqual(withoutMemory.draws.map((d) => d.value));
-  });
-
-  it("the flipping memories are still inside their non-negligible influence window at the decision tick", () => {
-    // ADR-16's fade curve: influence = recency x impact, recency = 1 - recencyDecayPerTick x age.
-    // The decision above happens 100 ticks after formation, so the memories are demonstrably
-    // faded but far from spent — the flip is not an artifact of reading a memory at age zero.
-    const [entry] = deprivationPool("hunger");
-    const value = influence(entry!, decisionTick);
-    expect(value).toBeCloseTo(1 - MEMORY_TUNING.recencyDecayPerTick * decisionTick, 12);
-    expect(value).toBeGreaterThan(0);
-    expect(value).toBeLessThan(entry!.impact);
+    expect(withHungerMemory.composedWeights.find((w) => w.key === lowA.key)!.memoryContributions.length).toBeGreaterThan(0);
   });
 
   it("hand-authored relational memories are not read by the weight family at all — only deprivation memories tilt a candidate", () => {
@@ -438,9 +446,9 @@ describe("Stage 2 Slice 9 — a formed memory flips which candidate a later deci
     ];
     const outcome = decideFromCandidates(
       [lowA, lowB],
-      withMemory(untraitedColonist, relationalPool),
+      withMemory(createColonist("c1", "Maya"), relationalPool),
       createPrng(13),
-      decisionTick,
+      100,
       workSnapshot,
     );
     if (outcome.kind !== "commit") throw new Error("expected a commit");
