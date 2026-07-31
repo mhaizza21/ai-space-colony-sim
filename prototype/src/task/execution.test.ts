@@ -253,6 +253,30 @@ describe("REGRESSION (Copilot-confirmed): ambientStateFor — the seven-state ob
     expect(ambientStateFor(beginExecution(restTask, restGoal, 0), calm)).toBe("resting");
   });
 
+  // Stage 2 Slice 9 (validation plan §10): the three socializing-mapped tasks were the one
+  // gap in the mapping above — execution.ts's TASK_AMBIENT_STATE has always routed them to
+  // "socializing", but nothing asserted it. Companion to tick.test.ts's real-run reachability
+  // test; this is the unit layer of the same claim.
+  it.each([
+    ["conversation", "zeke"],
+    ["sharedDowntime", "zeke"],
+    ["comfort", "zeke"],
+  ] as const)("maps in-progress %s to the socializing ambient state", (taskId, otherId) => {
+    const goal = commitGoal(
+      {
+        source: "voluntary",
+        tier: 5,
+        key: `voluntary:social:${taskId}:${otherId}`,
+        baseUrgency: 0.2,
+        relatedColonistId: otherId,
+        relatedSocialTaskId: taskId,
+      },
+      "m",
+      0,
+    );
+    expect(ambientStateFor(beginExecution(taskDefinition(taskId), goal, 0), calm)).toBe("socializing");
+  });
+
   it("no execution at all reads as blocked — 'motionless, not resting, not on task'", () => {
     expect(ambientStateFor(null, calm)).toBe("blocked");
   });
