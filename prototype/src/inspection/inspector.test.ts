@@ -10,6 +10,7 @@ import { setModuleFunctional } from "../world/world.js";
 import { suspendGoal, type Goal } from "../decision/goals.js";
 import type { Execution } from "../task/execution.js";
 import { applyInteraction, createRelationshipStore, type RelationshipStore } from "../colonist/relationships.js";
+import { CONFLICT_TUNING } from "../config/tuning.js";
 import { inspect, recentDecisions, recentEvents, summarizeReplay } from "./inspector.js";
 import { verifyReplay } from "../replay/replay.js";
 
@@ -207,6 +208,61 @@ describe("detached snapshots — mutating a result never aliases back into the s
     expect(state.colonists[0]!.suspendedExecution!.elapsedTicks).toBe(5);
   });
 
+  // Stage 2 Slice 9 (validation plan §6): the detachment guarantee above was only ever exercised
+  // on a mid-work colonist. These are the two Stage 2 states it had never been run against —
+  // no new inspector mechanism, just the untested combinations.
+  it.each([
+    ["mid-Comfort", "socializing"],
+    ["mid-inConflict", "inConflict"],
+  ] as const)("mutating a returned %s colonist summary never aliases back into the state", (scenario, expectedAmbient) => {
+    const zeke = { id: "zeke", name: "Zeke", skills: [], baseTraits: [] } as const;
+    const base = createInitialState(5, "c1", "Maya", [], [], [zeke]);
+    const comfortGoal: Goal = {
+      source: "voluntary",
+      tier: 5,
+      key: "voluntary:social:comfort:zeke",
+      relatedColonistId: "zeke",
+      relatedSocialTaskId: "comfort",
+      status: "active",
+      motivation: "test fixture",
+      adoptedAtTick: 0,
+    };
+    const comfortExecution: Execution = {
+      taskId: "comfort",
+      goalKey: "voluntary:social:comfort:zeke",
+      status: "inProgress",
+      startedAtTick: 0,
+      elapsedTicks: 7,
+    };
+    const posed =
+      scenario === "mid-Comfort"
+        ? { colonist: { ...base.colonists[0]!.colonist, currentGoal: comfortGoal }, execution: comfortExecution }
+        : { inConflictUntilTick: 20 };
+    const state: SimulationState = {
+      ...base,
+      clock: { ...base.clock, tick: 10 },
+      colonists: [{ ...base.colonists[0]!, ...posed }, ...base.colonists.slice(1)],
+    };
+
+    const summary = inspect(state);
+    expect(summary.colonists[0]!.ambientState).toBe(expectedAmbient);
+    if (scenario === "mid-Comfort") {
+      (summary.colonists[0]!.execution as { elapsedTicks: number }).elapsedTicks = 999999;
+      (summary.colonists[0]!.currentGoal as { key: string }).key = "tampered";
+      expect(state.colonists[0]!.execution!.elapsedTicks).toBe(7);
+      expect(state.colonists[0]!.colonist.currentGoal!.key).toBe("voluntary:social:comfort:zeke");
+    } else {
+      // Same mutate-then-reassert pattern as mid-Comfort: tamper with every inConflict-bearing
+      // field the summary exposes, then prove the live state and a fresh inspect are untouched.
+      (summary.colonists[0] as { ambientState: string }).ambientState = "tampered";
+      (summary.colonists[0]!.identity as { name: string }).name = "tampered";
+      expect(state.colonists[0]!.inConflictUntilTick).toBe(20);
+      expect(state.colonists[0]!.colonist.identity.name).toBe("Maya");
+    }
+    expect(inspect(state).colonists[0]!.ambientState).toBe(expectedAmbient); // unchanged by the tampering above
+    expect(inspect(state).colonists[0]!.identity.name).toBe("Maya");
+  });
+
   it("mutating the returned PRNG summary does not alter state.prng", () => {
     const state = activeState();
     const originalA = state.prng.a;
@@ -293,6 +349,32 @@ describe("relationship pair inspection (Stage 2 build step 5, ADR-20 D2)", () =>
         lastInteractionTick: 0,
       },
     ]);
+  });
+
+  // Stage 2 Slice 9 (validation plan §6): the same rendering, run against a pair a Confrontation
+  // actually shifted — new fixture, no new inspector code.
+  it("renders a Confrontation-shifted pair symmetrically, in both directions", () => {
+    const base = createInitialState(1, "c1", "Maya");
+    const shifted = applyInteraction(createRelationshipStore(), {
+      colonistAId: "c1",
+      colonistBId: "zeke",
+      tick: 12,
+      changeSource: "directConflict",
+      initiatorId: null,
+      responderId: null,
+      aTowardBDelta: CONFLICT_TUNING.directConflictAffinityDelta,
+      bTowardADelta: CONFLICT_TUNING.directConflictAffinityDelta,
+    }).store;
+
+    const summary = inspect({ ...base, relationships: shifted });
+    expect(summary.relationships).toHaveLength(1);
+    const pair = summary.relationships[0]!;
+    expect(pair.pair).toEqual(["c1", "zeke"]);
+    // Confrontation applies the same delta in both directions, so both perspectives read alike.
+    expect(pair.minTowardMax.affinity).toBe(CONFLICT_TUNING.directConflictAffinityDelta);
+    expect(pair.maxTowardMin.affinity).toBe(CONFLICT_TUNING.directConflictAffinityDelta);
+    expect(pair.minTowardMax.state).toBe(pair.maxTowardMin.state);
+    expect(pair.lastInteractionTick).toBe(12);
   });
 
   it("does not mutate the relationship store, and does not store or derive a named state anywhere in it", () => {
@@ -422,6 +504,30 @@ describe("social offer inspection (Stage 2 Slice 5, ADR-21 D6)", () => {
 
   it("an empty store reads as an empty list", () => {
     expect(inspect(createInitialState(1, "c1", "Maya")).socialOffers).toEqual([]);
+  });
+
+  // Stage 2 Slice 9 (validation plan §6): the existing tests use Conversation as their example
+  // action. ADR-21 D6's rendering is action-agnostic, so this is a fixture-only addition that
+  // confirms a Comfort offer's whole lifecycle is visible, not just Conversation's.
+  it("exposes a Comfort offer across its full lifecycle — created, accepted, and resolved", () => {
+    const base = createInitialState(1, "c1", "Maya", [], [], [zeke]);
+    const lifecycle: SimulationState = {
+      ...base,
+      socialOffers: {
+        offers: [
+          { id: 0, initiatorId: "c1", responderId: "zeke", action: "comfort", createdAtTick: 10, respondableAtTick: 11, expiresAtTick: 14, status: "pending", resolvedAtTick: null, reason: null },
+          { id: 1, initiatorId: "c1", responderId: "zeke", action: "comfort", createdAtTick: 20, respondableAtTick: 21, expiresAtTick: 24, status: "accepted", resolvedAtTick: 21, reason: null },
+          { id: 2, initiatorId: "c1", responderId: "zeke", action: "comfort", createdAtTick: 30, respondableAtTick: 31, expiresAtTick: 34, status: "declined", resolvedAtTick: 31, reason: "responderNotInterruptible" },
+        ],
+        nextOfferSequence: 3,
+      },
+    };
+
+    const summary = inspect(lifecycle);
+    expect(summary.socialOffers.map((o) => o.action)).toEqual(["comfort", "comfort", "comfort"]);
+    expect(summary.socialOffers.map((o) => o.status)).toEqual(["pending", "accepted", "declined"]);
+    expect(summary.socialOffers[1]!.resolvedAtTick).toBe(21);
+    expect(summary.socialOffers[2]!.reason).toBe("responderNotInterruptible");
   });
 
   it("detached: mutating the returned socialOffers never aliases back into the state", () => {
