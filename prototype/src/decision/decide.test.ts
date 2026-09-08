@@ -473,7 +473,13 @@ describe("Stage 2 Slice 9 — a relational memory formed via a real tick produce
   // formed memory's otherId names. Both candidates share the same base weight and no other
   // family applies here (no relationships store is passed), so composed weight is exactly tied
   // and the single seeded draw decides alone — seed 10 lands at 0.50199, a hair past the 0.5
-  // split point, so any nonzero tilt in either direction would flip the winner.
+  // split point, so social wins at baseline. A positive tilt on social (what a bonded memory
+  // would plausibly apply) could never flip this — social already wins outright, and growing its
+  // share further only reinforces that. Only a negative tilt on social large enough to drop its
+  // composed weight below idle's (roughly a 1% relative drop, given how thin this draw's margin
+  // is) would flip the winner to idle. Neither direction is what's being pinned, though: the
+  // assertions below show today's memoryContributions filter applies no tilt at all, in either
+  // direction, regardless of which one a future fix would need.
   const freeSnapshot: WorldSnapshot = buildSnapshot(advance(createClock(), 960), createDefaultPolicy(), createWorld());
   const idleCandidate: GoalCandidate = { source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 };
   const socialCandidate: GoalCandidate = {
@@ -549,8 +555,9 @@ describe("Stage 2 Slice 9 — a relational memory formed via a real tick produce
 
     // Same seed, same candidates, same draw — and the same winning key. The formed relational
     // memory is present, names the candidate's own related colonist, and is still inside its
-    // influence window, but contributes nothing even in a scenario precise enough that any
-    // nonzero contribution would have flipped the outcome.
+    // influence window, but contributes nothing: `memoryContributions` is empty and the `memory`
+    // multiplier is 1 for every candidate below, which is what actually pins the gap (not the
+    // draw's margin — see the describe-level comment on why a tilt's direction matters here).
     expect(withRelationalMemory.goal.key).toBe(withoutMemory.goal.key);
     expect(withRelationalMemory.draws.map((d) => d.value)).toEqual(withoutMemory.draws.map((d) => d.value));
     for (const weight of withRelationalMemory.composedWeights) {
