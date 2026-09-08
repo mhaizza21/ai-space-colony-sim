@@ -463,6 +463,33 @@ describe("Stage 2 Slice 9 — a relational memory formed via a real tick produce
   // §3 step 4 / §10 gap pin: memoryContributions reads deprivation memories only. Form a real
   // relational memory through the same atrophy path tick.test.ts already uses, then show that
   // carrying it into a later decision changes neither the selected candidate nor any memory tilt.
+  //
+  // Copilot review (PR #162, post-merge): the original version of this pin used the hunger/rest
+  // lowNeed pair. Neither carries a relatedColonistId, so the pin would have kept passing even
+  // after relational-memory weighting was correctly added for social candidates — it never
+  // exercised the code path a real fix would extend, and so could not detect the gap closing.
+  // Use idleCandidate/socialCandidate instead (same shape the sibling "relationship state flips"
+  // describe above uses): socialCandidate's relatedColonistId is "zeke", the exact colonist the
+  // formed memory's otherId names. Both candidates share the same base weight and no other
+  // family applies here (no relationships store is passed), so composed weight is exactly tied
+  // and the single seeded draw decides alone — seed 10 lands at 0.50199, a hair past the 0.5
+  // split point, so social wins at baseline. A positive tilt on social (what a bonded memory
+  // would plausibly apply) could never flip this — social already wins outright, and growing its
+  // share further only reinforces that. Only a negative tilt on social large enough to drop its
+  // composed weight below idle's (roughly a 1% relative drop, given how thin this draw's margin
+  // is) would flip the winner to idle. Neither direction is what's being pinned, though: the
+  // assertions below show today's memoryContributions filter applies no tilt at all, in either
+  // direction, regardless of which one a future fix would need.
+  const freeSnapshot: WorldSnapshot = buildSnapshot(advance(createClock(), 960), createDefaultPolicy(), createWorld());
+  const idleCandidate: GoalCandidate = { source: "voluntary", tier: 5, key: "voluntary:idle", baseUrgency: 0.2 };
+  const socialCandidate: GoalCandidate = {
+    source: "voluntary",
+    tier: 5,
+    key: "voluntary:social:conversation:zeke",
+    baseUrgency: 0.2,
+    relatedColonistId: "zeke",
+    relatedSocialTaskId: "conversation",
+  };
   const SIGNIFICANT_TICKS = 800; // atrophyPerTick 0.02 × 800 ≫ relationshipChangeSignificance 15
 
   function atrophyStateThatFormsRelationalMemory(): SimulationState {
@@ -496,23 +523,41 @@ describe("Stage 2 Slice 9 — a relational memory formed via a real tick produce
     expect(formed.events.some((e) => e.kind === "memoryFormed" && e.memoryType === "relational")).toBe(true);
     const relationalMemories = formed.finalState.colonists[0]!.colonist.memory.filter((e) => e.type === "relational");
     expect(relationalMemories.length).toBeGreaterThan(0);
+    // The formed memory names the same colonist the live social candidate is related to.
+    expect(relationalMemories.some((entry) => entry.type === "relational" && entry.context.otherId === "zeke")).toBe(true);
 
     const decisionTick = formed.finalState.clock.tick;
-    const candidates = [lowA, lowB];
-    const withoutMemory = decideFromCandidates(candidates, createColonist("c1", "Maya"), createPrng(13), decisionTick, workSnapshot);
+    const candidates = [idleCandidate, socialCandidate];
+    const untraitedColonist = createColonist("c1", "Maya");
+
+    const drawValue = next(createPrng(10)).value;
+    expect(drawValue).toBeGreaterThan(0.5);
+    expect(drawValue).toBeLessThan(0.502);
+
+    const withoutMemory = decideFromCandidates(candidates, untraitedColonist, createPrng(10), decisionTick, freeSnapshot);
     const withRelationalMemory = decideFromCandidates(
       candidates,
-      withMemory(createColonist("c1", "Maya"), relationalMemories),
-      createPrng(13),
+      withMemory(untraitedColonist, relationalMemories),
+      createPrng(10),
       decisionTick,
-      workSnapshot,
+      freeSnapshot,
     );
 
     expect(withoutMemory.kind).toBe("commit");
     expect(withRelationalMemory.kind).toBe("commit");
     if (withoutMemory.kind !== "commit" || withRelationalMemory.kind !== "commit") return;
+
+    // Composed weight is exactly tied — no family but the (empty) memory one is in play, so the
+    // outcome turns entirely on the razor-thin draw computed above.
+    const idleWeight = withoutMemory.composedWeights.find((w) => w.key === idleCandidate.key)!;
+    const socialWeight = withoutMemory.composedWeights.find((w) => w.key === socialCandidate.key)!;
+    expect(idleWeight.composed).toBe(socialWeight.composed);
+
     // Same seed, same candidates, same draw — and the same winning key. The formed relational
-    // memory is present and still inside its influence window, but contributes nothing.
+    // memory is present, names the candidate's own related colonist, and is still inside its
+    // influence window, but contributes nothing: `memoryContributions` is empty and the `memory`
+    // multiplier is 1 for every candidate below, which is what actually pins the gap (not the
+    // draw's margin — see the describe-level comment on why a tilt's direction matters here).
     expect(withRelationalMemory.goal.key).toBe(withoutMemory.goal.key);
     expect(withRelationalMemory.draws.map((d) => d.value)).toEqual(withoutMemory.draws.map((d) => d.value));
     for (const weight of withRelationalMemory.composedWeights) {
